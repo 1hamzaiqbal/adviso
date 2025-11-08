@@ -1,0 +1,15 @@
+# Core
+numpy==1.26.4
+opencv-contrib-python==4.10.0.84
+pillow==10.4.0
+tqdm==4.66.5
+matplotlib==3.9.2
+moviepy==1.0.3
+
+# Optional (improves results)
+torch>=2.1.0
+torchvision>=0.16.0
+clip-anytorch==2.6.0
+
+# App
+streamlit==1.38.0
