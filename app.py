@@ -19,7 +19,7 @@ warnings.filterwarnings(
 st.set_page_config(page_title='Ad Attention Analyzer', layout='wide')
 
 st.title('Ad Attention Analyzer')
-st.caption('Predict attention, inspect pacing, and optionally run a quick Vertex AI brand check.')
+st.caption('Predict attention, inspect pacing, and run a quick Vertex AI brand check.')
 
 
 def _run_local_cli(
@@ -29,7 +29,6 @@ def _run_local_cli(
     goal: str,
     age_group: str,
     scene_method: str,
-    use_clip: bool,
     lam_override: Optional[str],
 ) -> None:
     import sys
@@ -49,8 +48,6 @@ def _run_local_cli(
         '--scene-method',
         scene_method,
     ]
-    if use_clip:
-        args.append('--use-clip')
     if lam_override and lam_override.strip():
         args.extend(['--lambda', lam_override.strip()])
     sys.argv = args
@@ -315,7 +312,6 @@ with st.form('analysis_form'):
     uploaded = st.file_uploader('Upload MP4', type=['mp4'], help='Limit ~200MB')
     col_opts = st.columns(3)
     with col_opts[0]:
-        use_clip = st.checkbox('Use CLIP scoring', value=False)
         fps = st.slider('Sampling FPS', 1, 6, 2)
     with col_opts[1]:
         goal = st.selectbox('Creative goal', ['hook', 'explainer', 'calm_brand'], index=0)
@@ -326,17 +322,14 @@ with st.form('analysis_form'):
             ['general', 'gen_z', 'millennial', 'gen_x', 'boomer', 'children'],
             index=0,
         )
-        lam_override = st.text_input('Lambda override (optional)', '')
+        lam_override = st.text_input('Lambda override', '')
 
     st.subheader('Cloud Brand Analysis')
-    cloud_cols = st.columns(2)
-    project_default = os.getenv('GOOGLE_CLOUD_PROJECT', 'advertigo')
-    with cloud_cols[0]:
-        project_id = st.text_input('GCP Project', value=project_default)
-        max_secs = st.slider('Max seconds to send', 10, 120, 60)
-    with cloud_cols[1]:
-        brand_name = st.text_input('Brand / Product name', '')
-        brand_context = st.text_area('Brand context / mission (optional)', height=80)
+    vertex_project = os.getenv('GOOGLE_CLOUD_PROJECT', 'advertigo')
+    vertex_location = os.getenv('GOOGLE_CLOUD_LOCATION', 'us-central1')
+    max_secs = st.slider('Max seconds to send', 10, 120, 60)
+    brand_name = st.text_input('Brand / Product name', '')
+    brand_context = st.text_area('Brand context / mission', height=80)
 
     submitted = st.form_submit_button('Run analysis', use_container_width=True)
 
@@ -362,7 +355,6 @@ if submitted:
                     goal=goal,
                     age_group=age_group,
                     scene_method=scene_method,
-                    use_clip=use_clip,
                     lam_override=lam_override,
                 )
 
@@ -371,15 +363,15 @@ if submitted:
 
             cloud_result: Optional[Dict[str, Any]] = None
             cloud_err: Optional[str] = None
-            if project_id:
+            if vertex_project:
                 with st.spinner('Calling Vertex AI...'):
                     try:
                         cloud_result = analyze_brand_vertex(
                             video_bytes=video_bytes,
                             filename=uploaded.name or 'video.mp4',
                             content_type=uploaded.type or 'video/mp4',
-                            project=project_id,
-                            location='us-central1',
+                            project=vertex_project,
+                            location=vertex_location,
                             gcs_bucket=None,
                             max_seconds=float(max_secs),
                             brand_name=brand_name.strip() or None,
