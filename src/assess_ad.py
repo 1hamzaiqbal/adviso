@@ -10,6 +10,7 @@ from .overlay import write_overlay_video
 from .scene_change import compute_deltas, cut_rate_series, pacing_score_series
 from .score_interpreter import interpret_score
 from .age_groups import get_pacing_for_age_group, AGE_GROUPS
+from .brand_checks import evaluate_brand_consistency, parse_hex_palette
 
 GOAL_PRESETS = {
     "hook": {"f_star": 0.5, "lambda": 0.5},
@@ -26,14 +27,20 @@ def main():
     ap.add_argument('--goal', choices=list(GOAL_PRESETS.keys()), default='hook', help='goal preset')
     ap.add_argument('--lambda', dest='lam', type=float, default=None, help='override lambda')
     ap.add_argument('--scene-method', choices=['hist','clip'], default='hist', help='delta method')
-    ap.add_argument('--age-group', choices=list(AGE_GROUPS.keys()), default='general', 
+    ap.add_argument('--age-group', choices=list(AGE_GROUPS.keys()), default='general',
                     help='target age group for scoring (affects weights, thresholds, and pacing preferences)')
+    ap.add_argument('--brand-logo', default=None, help='path to brand logo image (optional)')
+    ap.add_argument('--brand-colors', default=None, help='comma-separated brand hex colors (e.g. #FF0000,#00FF00)')
+    ap.add_argument('--brand-terms', default=None, help='comma-separated brand keywords to expect in on-screen text')
+    ap.add_argument('--ocr-text', action='store_true', help='run OCR-based message clarity checks (requires easyocr)')
+    ap.add_argument('--logo-threshold', type=float, default=0.6, help='confidence threshold for logo detection (0-1)')
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     frames, times, native_fps = read_frames(args.video, fps=args.fps)
     if not frames:
         raise SystemExit('No frames extracted.')
+    frame_times = list(times)
 
     sal_maps, sal_scores = [], []
     for f in frames:
@@ -103,6 +110,19 @@ def main():
     # Generate score interpretation with age group
     interpretation = interpret_score(overall, first5s, avg_cut, args.goal, f_star, age_group=args.age_group)
 
+    brand_palette = parse_hex_palette(args.brand_colors)
+    brand_terms = [t.strip() for t in (args.brand_terms or '').split(',') if t.strip()]
+    brand_eval = evaluate_brand_consistency(
+        frames=frames,
+        times=frame_times,
+        video_path=args.video,
+        brand_logo_path=args.brand_logo,
+        brand_colors=brand_palette,
+        brand_terms=brand_terms,
+        run_ocr=args.ocr_text or bool(brand_terms),
+        logo_threshold=float(args.logo_threshold),
+    )
+
     report = {
         'Goal': args.goal,
         'AgeGroup': args.age_group,
@@ -114,6 +134,14 @@ def main():
         'FramesAnalyzed': len(frames),
         'SamplingFPS': args.fps,
         'UsedCLIP': bool(args.use_clip),
+        'BrandInputs': {
+            'brandLogoPath': args.brand_logo,
+            'brandColors': brand_palette,
+            'brandTerms': brand_terms,
+            'ocrText': bool(args.ocr_text or brand_terms),
+            'logoThreshold': float(args.logo_threshold),
+        },
+        'BrandEvaluation': brand_eval,
         'ScoreInterpretation': interpretation,
         'Files': {
             'overlay_video': overlay_path,

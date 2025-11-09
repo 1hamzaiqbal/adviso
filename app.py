@@ -30,6 +30,11 @@ def _run_local_cli(
     scene_method: str,
     use_clip: bool,
     lam_override: Optional[str],
+    brand_logo_path: Optional[str],
+    brand_colors: Optional[str],
+    brand_terms: Optional[str],
+    ocr_text: bool,
+    logo_threshold: float,
 ) -> None:
     import sys
 
@@ -52,6 +57,16 @@ def _run_local_cli(
         args.append('--use-clip')
     if lam_override and lam_override.strip():
         args.extend(['--lambda', lam_override.strip()])
+    if brand_logo_path:
+        args.extend(['--brand-logo', brand_logo_path])
+    if brand_colors:
+        args.extend(['--brand-colors', brand_colors])
+    if brand_terms:
+        args.extend(['--brand-terms', brand_terms])
+    if ocr_text:
+        args.append('--ocr-text')
+    if logo_threshold is not None:
+        args.extend(['--logo-threshold', f"{logo_threshold:.2f}"])
 
     sys.argv = args
     from src.assess_ad import main as cli_main
@@ -106,6 +121,39 @@ def _render_summary_tab(report: Dict[str, Any]) -> None:
     )
     with st.expander('Scorecard JSON'):
         st.json(report)
+
+    brand_eval = report.get('BrandEvaluation') or {}
+    if brand_eval:
+        st.markdown('### Brand & Safety Heuristics')
+        brand_cols = st.columns(3)
+        overall_brand = brand_eval.get('overallScore')
+        if isinstance(overall_brand, (int, float)):
+            brand_cols[0].metric('Brand critique score', f"{overall_brand * 100:.1f}%")
+        components = brand_eval.get('components', {})
+        palette = components.get('colorPalette') or {}
+        if palette.get('available'):
+            brand_cols[1].metric('Palette match', f"{float(palette.get('score', 0.0)) * 100:.1f}%")
+        logo_comp = components.get('logoDetection') or {}
+        if logo_comp.get('available'):
+            detected = logo_comp.get('detected')
+            status = 'Detected' if detected else 'Not found'
+            score = logo_comp.get('score')
+            brand_cols[2].metric('Logo check', status, f"score={score:.2f}" if isinstance(score, (int, float)) else None)
+        text_comp = components.get('messageClarity') or {}
+        safety_comp = components.get('safetyHeuristics') or {}
+        extra_cols = st.columns(2)
+        if text_comp.get('available'):
+            text_score = text_comp.get('score')
+            extra_cols[0].metric('Message clarity', f"{float(text_score) * 100:.1f}%" if isinstance(text_score, (int, float)) else 'n/a')
+        if safety_comp.get('available'):
+            safety_score = safety_comp.get('score')
+            extra_cols[1].metric('Safety heuristics', f"{float(safety_score) * 100:.1f}%" if isinstance(safety_score, (int, float)) else 'n/a')
+
+        flags = brand_eval.get('flags') or []
+        if flags:
+            st.warning('\n'.join(f"• {flag}" for flag in flags))
+        with st.expander('Brand evaluation details'):
+            st.json(brand_eval)
 
 
 def _render_visuals_tab(out_dir: str) -> None:
@@ -243,6 +291,17 @@ with st.form('analysis_form'):
         )
         lam_override = st.text_input('Lambda override (optional)', '')
 
+    st.subheader('Brand & Safety Heuristics (local)')
+    brand_logo_upload = st.file_uploader('Brand logo (optional)', type=['png', 'jpg', 'jpeg', 'webp'])
+    heuristic_cols = st.columns(3)
+    with heuristic_cols[0]:
+        brand_colors_input = st.text_input('Brand palette (hex, comma separated)', '')
+        logo_threshold = st.slider('Logo threshold', 0.3, 0.9, 0.6, 0.05)
+    with heuristic_cols[1]:
+        brand_terms_input = st.text_input('Brand keywords / CTA', '')
+    with heuristic_cols[2]:
+        ocr_toggle = st.checkbox('Run OCR for message clarity', value=False, help='Requires easyocr and torch')
+
     st.markdown('---')
     st.subheader('Cloud Brand Analysis (Vertex, optional)')
     run_cloud = st.checkbox('Enable Vertex check', value=True)
@@ -273,6 +332,12 @@ if submitted:
             out_dir = os.path.join(tmpd, 'out')
             os.makedirs(out_dir, exist_ok=True)
 
+            logo_path_for_cli: Optional[str] = None
+            if brand_logo_upload is not None:
+                logo_path_for_cli = os.path.join(tmpd, 'brand_logo.png')
+                with open(logo_path_for_cli, 'wb') as logo_file:
+                    logo_file.write(brand_logo_upload.getvalue())
+
             with st.spinner('Running attention + pacing analysis...'):
                 _run_local_cli(
                     video_path=video_path,
@@ -283,6 +348,11 @@ if submitted:
                     scene_method=scene_method,
                     use_clip=use_clip,
                     lam_override=lam_override,
+                    brand_logo_path=logo_path_for_cli,
+                    brand_colors=brand_colors_input.strip() or None,
+                    brand_terms=brand_terms_input.strip() or None,
+                    ocr_text=ocr_toggle,
+                    logo_threshold=logo_threshold,
                 )
 
             report_path = os.path.join(out_dir, 'report.json')
