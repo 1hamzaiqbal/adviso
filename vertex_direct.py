@@ -121,50 +121,67 @@ def analyze_brand_vertex(
         # Helper to call model with strict, scoped prompts and return (obj, raw_text, err)
         import json as pyjson
 
-        def call_json(prompt_text: str) -> Tuple[Optional[Dict[str, Any]], str, Optional[str]]:
-            try:
-                if used_inline:
-                    parts = [Part.from_data(mime_type=content_type or "video/mp4", data=comp_bytes), prompt_text]
-                else:
-                    # Should not hit since we default to inline-only; keep for completeness
-                    parts = [Part.from_data(mime_type=content_type or "video/mp4", data=comp_bytes), prompt_text]
-                resp_local = model.generate_content(
-                    parts,
-                    generation_config={
-                        "temperature": 0.2,
-                        "max_output_tokens": 2048,
-                        "response_mime_type": "application/json",
-                    },
-                )
-                cand = (resp_local.candidates or [None])[0]
-                if not cand:
-                    return None, "", "no candidates"
-                parts_out_l = cand.content.parts or []
-                # JSON channels
-                for p in parts_out_l:
-                    jv = getattr(p, "json", None) or getattr(p, "json_value", None)
-                    if jv:
-                        return jv, "", None
-                # Text fallback
-                text_concat_l = "".join([getattr(p, "text", "") or "" for p in parts_out_l]).strip()
-                if not text_concat_l:
-                    return None, "", "empty text"
-                s = text_concat_l.find("{")
-                e = text_concat_l.rfind("}")
-                if s >= 0 and e > s:
-                    try:
-                        return pyjson.loads(text_concat_l[s:e + 1]), text_concat_l, None
-                    except Exception as pe:
-                        return None, text_concat_l, f"parse error: {pe}"
-                return None, text_concat_l, "no json braces"
-            except Exception as ce:
-                return None, "", str(ce)
+        def call_json(prompt_text: str, retries: int = 1) -> Tuple[Optional[Dict[str, Any]], str, Optional[str]]:
+            current_prompt = prompt_text
+            raw_text_cache = ""
+            last_err: Optional[str] = None
+            for attempt in range(retries + 1):
+                try:
+                    if used_inline:
+                        parts = [Part.from_data(mime_type=content_type or "video/mp4", data=comp_bytes), current_prompt]
+                    else:
+                        parts = [Part.from_data(mime_type=content_type or "video/mp4", data=comp_bytes), current_prompt]
+                    resp_local = model.generate_content(
+                        parts,
+                        generation_config={
+                            "temperature": 0.15,
+                            "max_output_tokens": 1536,
+                            "response_mime_type": "application/json",
+                        },
+                    )
+                    cand = (resp_local.candidates or [None])[0]
+                    if not cand:
+                        return None, "", "no candidates"
+                    parts_out_l = cand.content.parts or []
+                    # JSON channels
+                    for p in parts_out_l:
+                        jv = getattr(p, "json", None) or getattr(p, "json_value", None)
+                        if jv:
+                            return jv, "", None
+                    # Text fallback
+                    text_concat_l = "".join([getattr(p, "text", "") or "" for p in parts_out_l]).strip()
+                    raw_text_cache = text_concat_l
+                    if not text_concat_l:
+                        last_err = "empty text"
+                    else:
+                        s = text_concat_l.find("{")
+                        e = text_concat_l.rfind("}")
+                        if s >= 0 and e > s:
+                            snippet = text_concat_l[s:e + 1]
+                            try:
+                                return pyjson.loads(snippet), text_concat_l, None
+                            except Exception as pe:
+                                last_err = f"parse error: {pe}"
+                        else:
+                            last_err = "no json braces"
+                except Exception as ce:
+                    last_err = str(ce)
+
+                if attempt < retries:
+                    current_prompt = (
+                        "STRICT JSON REMINDER: Escape internal double quotes as \\\" and replace newlines with \\n. "
+                        "Keep strings concise. " + prompt_text
+                    )
+                    continue
+                break
+
+            return None, raw_text_cache, last_err
 
         # Build three scoped prompts to keep responses small and stable
         base_rules = (
             "Rules: Respond with JSON ONLY. Use exactly these key names. Always include all keys; if nothing found, use empty arrays. "
-            "Keep arrays small: transcript<=30, visualText<=30, audioGrammar.issues<=12, visualGrammar.issues<=12, visualSpelling.misspellings<=12. "
-            "Deduplicate repeated phrases. Keep per item text <= 160 chars."
+            "Keep arrays small: transcript<=24, visualText<=24, audioGrammar.issues<=8, visualGrammar.issues<=8, visualSpelling.misspellings<=8. "
+            "Deduplicate repeated phrases, limit each text value to <=160 chars, and escape embedded double quotes as \\\". Replace newlines with \\n."
         )
         context_lines = []
         if brand_name:
@@ -193,9 +210,9 @@ def analyze_brand_vertex(
         )
 
         # Execute calls
-        summary_obj, summary_raw, summary_err = call_json(p_summary)
-        transcript_obj, transcript_raw, transcript_err = call_json(p_transcript)
-        visual_obj, visual_raw, visual_err = call_json(p_visual)
+        summary_obj, summary_raw, summary_err = call_json(p_summary, retries=1)
+        transcript_obj, transcript_raw, transcript_err = call_json(p_transcript, retries=1)
+        visual_obj, visual_raw, visual_err = call_json(p_visual, retries=1)
 
         # Merge results
         result: Dict[str, Any] = {}
@@ -205,6 +222,24 @@ def analyze_brand_vertex(
             result.update(transcript_obj)
         if isinstance(visual_obj, dict):
             result.update(visual_obj)
+
+        # Clamp oversized lists so downstream JSON stays manageable
+        def _limit_list(key: str, limit: int):
+            arr = result.get(key)
+            if isinstance(arr, list) and len(arr) > limit:
+                result[key] = arr[:limit]
+
+        _limit_list('transcript', 24)
+        _limit_list('visualText', 24)
+        ag = result.get('audioGrammar')
+        if isinstance(ag, dict) and isinstance(ag.get('issues'), list) and len(ag['issues']) > 8:
+            ag['issues'] = ag['issues'][:8]
+        vg = result.get('visualGrammar')
+        if isinstance(vg, dict) and isinstance(vg.get('issues'), list) and len(vg['issues']) > 8:
+            vg['issues'] = vg['issues'][:8]
+        vs = result.get('visualSpelling')
+        if isinstance(vs, dict) and isinstance(vs.get('misspellings'), list) and len(vs['misspellings']) > 8:
+            vs['misspellings'] = vs['misspellings'][:8]
 
         # Attach troubleshooting info
         result.setdefault('AnalysisMeta', {})
