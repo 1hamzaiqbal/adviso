@@ -36,7 +36,7 @@ backend_url: str = st.text_input('Backend URL', value=default_backend, help='e.g
 brand_name: str = st.text_input('Brand Name (optional)', '')
 brand_mission: str = st.text_area('Brand Mission (optional)', '')
 run_cloud = st.checkbox('Run Cloud Brand Analysis', value=bool(backend_url))
-run_visual_text = st.checkbox('Run Visual OCR + Grammar (beta)', value=True,
+run_visual_text = st.checkbox('Run Visual OCR + Grammar (beta)', value=False,
                               help='Extract on-screen text with OCR, spellcheck and simple grammar; includes timestamps.')
 
 if uploaded is not None and st.button('Analyze'):
