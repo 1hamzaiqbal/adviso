@@ -43,19 +43,18 @@ streamlit run app.py
 
 Upload an MP4 to see heatmaps, curve, and the JSON report.
 
-### Optional: Cloud Brand Coherence (Vertex AI)
+### Cloud Brand Coherence (Vertex Direct)
 
-This app can call a Node/Express backend (deployed on Cloud Run or run locally) to run a brand coherence analysis using GCS + Vertex AI.
+The app now calls Vertex AI directly from Python — no separate backend required.
 
-- Set `ADVALUATE_BACKEND_URL` (env var) or paste the URL into the Streamlit field.
-- Toggle "Run Cloud Brand Analysis" and optionally enter Brand Name/Mission.
-- On Analyze, the app uploads your video via a signed URL and requests analysis. Results render in the UI.
+- Set credentials via Application Default Credentials:
+  - `gcloud auth application-default login` or set `GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json`
+- Provide your GCP Project and Vertex Location in the UI.
+- On Analyze, the app compresses the video (up to the selected duration) to fit an inline Vertex request; results render in the UI.
 
-Backend API requirements:
-- Endpoints: `GET /api/sign-upload`, `POST /api/analyze`
-- Env (backend): `UPLOAD_BUCKET`, `VERTEX_LOCATION` (default `us-central1`), Google Cloud credentials
-
-If you use the prepared Cloud Run deployment, point `ADVALUATE_BACKEND_URL` to your service URL (e.g., `https://advaluate-api-xxxxx-uc.a.run.app`).
+Notes:
+- For long videos, the app trims to your chosen max seconds and downscales to keep the request inline (~15MB limit).
+- Returned JSON includes description, logoAnalysis, textCoherency, textExtraction, transcript, audioGrammar, visualText, visualGrammar, and visualSpelling; the UI renders these.
 
 ### Visual + Audio Word/Grammar Checkers
 

@@ -8,8 +8,8 @@ import streamlit as st
 # Silence noisy third-party warnings
 warnings.filterwarnings('ignore', message='pkg_resources is deprecated as an API.*', category=UserWarning)
 
-from cloud_brand_analysis import CloudBrandAnalyzer
-from src.visual_text import extract_visual_text
+# Direct Vertex analysis (no backend)
+from vertex_direct import analyze_brand_vertex
 
 st.set_page_config(page_title='Ad Attention Analyzer', layout='wide')
 st.title('Ad Attention Analyzer')
@@ -27,14 +27,13 @@ scene_method = st.selectbox('Scene-change method', ['hist','clip'], index=0)
 lam_override = st.text_input('Lambda override (optional)', '')
 
 st.markdown('---')
-st.subheader('Cloud Analysis (Vertex AI)')
-st.caption('If a backend URL is provided, Analyze will automatically run cloud audio transcript + grammar and visual OCR/grammar in one pass.')
-
-default_backend = os.getenv('ADVALUATE_BACKEND_URL', '').strip()
-backend_url: str = st.text_input('Backend URL', value=default_backend, help='e.g., https://advaluate-api-xxxx-uc.a.run.app')
+st.subheader('Cloud Analysis (Vertex direct)')
+st.caption('Calls Vertex AI directly from this app — no buckets required for short videos. Longer videos are compressed inline.')
 brand_name: str = st.text_input('Brand Name (optional)', '')
 brand_mission: str = st.text_area('Brand Mission (optional)', '')
-cloud_enabled = bool(backend_url.strip())
+project_id = st.text_input('GCP Project', value='advertigo')
+vertex_loc = st.text_input('Vertex Location', value='us-central1')
+max_secs = st.slider('Max seconds to analyze (compressed)', 10, 120, 60, help='Lower this if cloud parsing fails; shorter clips are more reliable.')
 
 if uploaded is not None and st.button('Analyze'):
     with tempfile.TemporaryDirectory() as tmpd:
@@ -63,41 +62,23 @@ if uploaded is not None and st.button('Analyze'):
 
         cloud_result = None
         cloud_err = None
-        if cloud_enabled:
-            with st.spinner('Uploading to cloud and analyzing brand coherence...'):
-                try:
-                    analyzer = CloudBrandAnalyzer(base_url=backend_url.strip())
-                    cloud_result = analyzer.run(
-                        video_bytes=video_bytes,
-                        filename=uploaded.name or 'video.mp4',
-                        content_type=uploaded.type or 'video/mp4',
-                        brand_name=(brand_name or None),
-                        brand_mission=(brand_mission or None)
-                    )
-                except Exception as e:
-                    cloud_err = str(e)
+        with st.spinner('Analyzing with Vertex (direct)...'):
+            try:
+                if not project_id:
+                    raise RuntimeError('Set GCP Project in the UI or GOOGLE_CLOUD_PROJECT env var')
+                cloud_result = analyze_brand_vertex(
+                    video_bytes=video_bytes,
+                    filename=uploaded.name or 'video.mp4',
+                    content_type=uploaded.type or 'video/mp4',
+                    project=project_id,
+                    location=vertex_loc or 'us-central1',
+                    gcs_bucket=None,
+                    max_seconds=float(max_secs),
+                )
+            except Exception as e:
+                cloud_err = str(e)
 
-        visual_result = None
-        cloud_visual = None
-        if cloud_enabled:
-            # Prefer cloud visual outputs; fallback to local OCR only if missing
-            cloud_visual = {
-                'visualText': (cloud_result or {}).get('visualText'),
-                'visualGrammar': (cloud_result or {}).get('visualGrammar'),
-                'visualSpelling': (cloud_result or {}).get('visualSpelling'),
-            }
-            if not any([(cloud_visual.get('visualText') or {}), (cloud_visual.get('visualGrammar') or {}), (cloud_visual.get('visualSpelling') or {})]):
-                try:
-                    with st.spinner('Cloud visual output unavailable. Falling back to local OCR...'):
-                        visual_result = extract_visual_text(video_path, fps=1.0, max_frames=90)
-                except Exception as e:
-                    visual_result = {'available': False, 'reason': str(e), 'segments': []}
-        else:
-            with st.spinner('Extracting visual text locally (OCR) and checking grammar...'):
-                try:
-                    visual_result = extract_visual_text(video_path, fps=1.0, max_frames=90)
-                except Exception as e:
-                    visual_result = {'available': False, 'reason': str(e), 'segments': []}
+        # No local OCR/transcription in cloud-direct mode
 
         # Display final score prominently
         if 'ScoreInterpretation' in rep:
@@ -174,13 +155,34 @@ if uploaded is not None and st.button('Analyze'):
         if cloud_err:
             st.error(f'Cloud analysis failed: {cloud_err}')
         elif cloud_result is not None:
-            # Present a tidy summary similar to advaluate_build_1/types
             try:
+                # Try to fill missing summary fields from RawResponses.summaryRawText
+                def _json_from_text(raw_text: str):
+                    try:
+                        import json as _pyjson
+                        s = raw_text.find('{'); e = raw_text.rfind('}')
+                        if s >= 0 and e > s:
+                            return _pyjson.loads(raw_text[s:e+1])
+                    except Exception:
+                        return None
+                    return None
+
+                try:
+                    raws_all = (cloud_result.get('RawResponses') if isinstance(cloud_result, dict) else None) or {}
+                    sraw = raws_all.get('summaryRawText')
+                    sjson = _json_from_text(sraw) if sraw else None
+                    if isinstance(sjson, dict):
+                        for k in ('description','logoAnalysis','textCoherency','textExtraction'):
+                            v = cloud_result.get(k)
+                            if not v or (isinstance(v, dict) and not v):
+                                cloud_result[k] = sjson.get(k)
+                except Exception:
+                    pass
+
                 st.markdown('### Brand Summary')
                 desc = cloud_result.get('description')
                 if desc:
                     st.write(desc)
-
                 colb1, colb2 = st.columns(2)
                 with colb1:
                     st.markdown('#### Logo Analysis')
@@ -200,27 +202,157 @@ if uploaded is not None and st.button('Analyze'):
                     analysis = tc.get('analysis')
                     if analysis:
                         st.caption(analysis)
-
-                st.markdown('#### Text Extraction')
+                # Text extraction + brand mentions (recomputed from transcript/visual)
                 te = cloud_result.get('textExtraction') or {}
+                st.markdown('#### Text Extraction')
                 st.json(te)
 
+                # Compute brand mentions from audio + visual using provided brand_name
+                def _collect_mentions(name: str, items, ts_key_start='startSec', ts_key_end='endSec', txt_key='text'):
+                    out = []
+                    if not name or not items:
+                        return out
+                    name_l = name.strip().lower()
+                    for seg in items:
+                        try:
+                            txt = str(seg.get(txt_key, '')).lower()
+                            if not txt:
+                                continue
+                            if name_l in txt:
+                                out.append({
+                                    'startSec': float(seg.get(ts_key_start, 0.0)) if isinstance(seg.get(ts_key_start), (int,float)) else None,
+                                    'endSec': float(seg.get(ts_key_end, 0.0)) if isinstance(seg.get(ts_key_end), (int,float)) else None,
+                                    'text': seg.get(txt_key, '')
+                                })
+                        except Exception:
+                            continue
+                    return out
+
+                # Helpers to extract segments with flexible shapes/keys
+                def _parse_segments_from_value(val):
+                    if isinstance(val, list):
+                        return val
+                    if isinstance(val, dict):
+                        segs = val.get('segments')
+                        if isinstance(segs, list):
+                            return segs
+                    return []
+
+                def _json_from_text(raw_text: str):
+                    try:
+                        import json as _pyjson
+                        s = raw_text.find('{')
+                        e = raw_text.rfind('}')
+                        if s >= 0 and e > s:
+                            return _pyjson.loads(raw_text[s:e+1])
+                    except Exception:
+                        return None
+                    return None
+
+                # Parse transcript segments of either shape with fallbacks
+                tr_obj = cloud_result.get('transcript') if isinstance(cloud_result, dict) else None
+                tr_segs = _parse_segments_from_value(tr_obj)
+                if not tr_segs:
+                    # Fallback: parse from raw text if available
+                    raws = (cloud_result.get('RawResponses') if isinstance(cloud_result, dict) else None) or {}
+                    tr_raw = raws.get('transcriptRawText')
+                    j = _json_from_text(tr_raw) if tr_raw else None
+                    if isinstance(j, dict):
+                        tr_segs = _parse_segments_from_value(j.get('transcript'))
+
+                # Parse visual segments with fallbacks
+                vt_obj = cloud_result.get('visualText') if isinstance(cloud_result, dict) else None
+                vt_segs = _parse_segments_from_value(vt_obj)
+                if not vt_segs:
+                    raws = (cloud_result.get('RawResponses') if isinstance(cloud_result, dict) else None) or {}
+                    vt_raw = raws.get('visualRawText')
+                    j2 = _json_from_text(vt_raw) if vt_raw else None
+                    if isinstance(j2, dict):
+                        vt_segs = _parse_segments_from_value(j2.get('visualText'))
+
+                audio_mentions = _collect_mentions(brand_name, tr_segs)
+                visual_mentions = _collect_mentions(brand_name, vt_segs)
+
+                # Show brand mentions summary
+                st.markdown('#### Brand Mentions (Computed)')
+                cma, cmv = st.columns(2)
+                with cma:
+                    st.markdown(f"Audio: {len(audio_mentions)}")
+                    if audio_mentions:
+                        for m in audio_mentions:
+                            t0 = m.get('startSec'); t1 = m.get('endSec'); txt = m.get('text','')
+                            if isinstance(t0, (int,float)) and isinstance(t1, (int,float)):
+                                st.caption(f"[{t0:.1f}s → {t1:.1f}s] {txt}")
+                            elif isinstance(t0, (int,float)):
+                                st.caption(f"t≈{t0:.1f}s: {txt}")
+                            else:
+                                st.caption(txt)
+                with cmv:
+                    st.markdown(f"Visual: {len(visual_mentions)}")
+                    if visual_mentions:
+                        for m in visual_mentions:
+                            t0 = m.get('startSec'); t1 = m.get('endSec'); txt = m.get('text','')
+                            if isinstance(t0, (int,float)) and isinstance(t1, (int,float)):
+                                st.caption(f"[{t0:.1f}s → {t1:.1f}s] {txt}")
+                            elif isinstance(t0, (int,float)):
+                                st.caption(f"t≈{t0:.1f}s: {txt}")
+                            else:
+                                st.caption(txt)
+
+                # If cloud textExtraction has brandMentions, show a quick comparison
+                try:
+                    cloud_bm = te.get('brandMentions')
+                    if isinstance(cloud_bm, (int,float)):
+                        st.caption(f"Cloud brandMentions: {int(cloud_bm)} • Computed total: {len(audio_mentions)+len(visual_mentions)}")
+                except Exception:
+                    pass
                 with st.expander('Raw Cloud Response'):
+                    meta = (cloud_result.get('AnalysisMeta') if isinstance(cloud_result, dict) else None) or {}
+                    if meta:
+                        size_mb = float(meta.get('compressedBytes', 0))/1024/1024 if meta.get('compressedBytes') else 0
+                        st.caption(f"Compressed size sent inline: {size_mb:.2f} MB; usedInline={bool(meta.get('usedInline'))}; maxSeconds={meta.get('maxSeconds')}")
+                    # Show any raw texts from multi-call flow
+                    raws = (cloud_result.get('RawResponses') if isinstance(cloud_result, dict) else None) or {}
+                    for label, raw_val in raws.items():
+                        if raw_val:
+                            st.markdown(f"{label}:")
+                            st.code(raw_val, language='json')
+                    # Legacy single-call rawText support
+                    if isinstance(cloud_result, dict) and cloud_result.get('rawText'):
+                        st.markdown('rawText:')
+                        st.code(cloud_result.get('rawText') or '', language='json')
+                    # Always provide final merged JSON for debugging
+                    st.markdown('Merged JSON:')
                     st.json(cloud_result)
             except Exception:
-                # Fallback to raw JSON if schema differs
                 st.json(cloud_result)
 
         st.markdown('---')
         st.subheader('Visual OCR + Grammar (On-screen text)')
-        # Prefer cloud outputs
-        vt = (cloud_visual or {}).get('visualText') if cloud_visual else None
+        # Cloud outputs (with fallback into raw if needed)
+        vt = (cloud_result or {}).get('visualText') if cloud_result else None
         # Accept both shapes: list or {segments:[...]}
         cloud_v_segments = []
         if isinstance(vt, list):
             cloud_v_segments = vt
         elif isinstance(vt, dict):
             cloud_v_segments = vt.get('segments', []) or []
+        if not cloud_v_segments and isinstance(cloud_result, dict):
+            raws = cloud_result.get('RawResponses') or {}
+            vraw = raws.get('visualRawText')
+            if vraw:
+                try:
+                    import json as _pyjson
+                    s = vraw.find('{'); e = vraw.rfind('}')
+                    if s >= 0 and e > s:
+                        j = _pyjson.loads(vraw[s:e+1])
+                        val = j.get('visualText')
+                        if isinstance(val, list):
+                            cloud_v_segments = val
+                        elif isinstance(val, dict) and isinstance(val.get('segments'), list):
+                            cloud_v_segments = val.get('segments')
+                except Exception:
+                    pass
         if cloud_v_segments:
             st.markdown('#### Extracted Phrases (cloud)')
             for s in cloud_v_segments:
@@ -234,7 +366,7 @@ if uploaded is not None and st.button('Analyze'):
                         st.write(txt)
                 except Exception:
                     st.write(s)
-            vg = (cloud_visual or {}).get('visualGrammar') or {}
+            vg = (cloud_result or {}).get('visualGrammar') or {}
             gi = vg.get('issues', []) if isinstance(vg, dict) else []
             if gi:
                 st.markdown('#### Visual Grammar Issues (cloud)')
@@ -246,37 +378,15 @@ if uploaded is not None and st.button('Analyze'):
                     st.write(f"{prefix}{sev_prefix}{m.get('message','')}")
                     if m.get('suggestion'):
                         st.caption(f"Suggestion: {m['suggestion']}")
-            vs = (cloud_visual or {}).get('visualSpelling') or {}
+            vs = (cloud_result or {}).get('visualSpelling') or {}
             miss = vs.get('misspellings', []) if isinstance(vs, dict) else []
             if miss:
                 st.markdown('#### Visual Spelling (cloud)')
                 st.json(miss)
         else:
-            # Local fallback
-            if visual_result is None:
-                st.info('No cloud visual output and local OCR disabled or failed.')
-            elif not visual_result.get('available', False):
-                st.warning(f"OCR/Grammar not available: {visual_result.get('reason','unknown')}")
-            else:
-                segs = visual_result.get('segments', [])
-                if segs:
-                    st.markdown('#### Extracted Phrases (local)')
-                    for seg in segs:
-                        st.write(f"t={seg['time']:.1f}s: {seg['text']}")
-                        if seg.get('misspellings'):
-                            st.caption(f"Misspellings: {', '.join(seg['misspellings'])}")
-                        if seg.get('grammar_issues'):
-                            for gi in seg['grammar_issues']:
-                                st.caption(f"Grammar: {gi.get('message','')} → {gi.get('suggestion','')}")
-                else:
-                    st.info('No on-screen text detected (local).')
-                st.markdown('#### Visual Spelling Summary (local)')
-                st.json(visual_result.get('misspellings_summary', {}))
-                if visual_result.get('grammar_issues_summary'):
-                    with st.expander('Visual Grammar Issues (detailed, local)'):
-                        st.json(visual_result['grammar_issues_summary'])
+            st.info('No on-screen text detected by cloud.')
 
-        # Audio transcript + grammar (from cloud)
+        # Audio transcript + grammar
         if cloud_result is not None:
             st.markdown('---')
             st.subheader('Audio Transcript + Grammar (Cloud)')
@@ -297,6 +407,16 @@ if uploaded is not None and st.button('Analyze'):
                         st.write(s)
             ag = (cloud_result or {}).get('audioGrammar', {})
             issues = ag.get('issues', []) if isinstance(ag, dict) else []
+            # Fallback to raw transcript stage if needed
+            if not issues and isinstance(cloud_result, dict):
+                raws = cloud_result.get('RawResponses') or {}
+                tr_raw = raws.get('transcriptRawText')
+                if tr_raw:
+                    j = _json_from_text(tr_raw)
+                    if isinstance(j, dict):
+                        ag2 = j.get('audioGrammar') or {}
+                        if isinstance(ag2, dict) and isinstance(ag2.get('issues'), list):
+                            issues = ag2.get('issues')
             if issues:
                 st.markdown('#### Audio Grammar Issues')
                 for m in issues:
@@ -307,6 +427,7 @@ if uploaded is not None and st.button('Analyze'):
                     st.write(f"{prefix}{sev_prefix}{m.get('message','')}")
                     if m.get('suggestion'):
                         st.caption(f"Suggestion: {m['suggestion']}")
+        # No local transcript path in cloud-direct mode
 
 st.markdown('---')
 st.caption('Pacing: P_t = exp(-λ (f_t − f*)²). Goals: hook=2.0 cps, explainer=0.8 cps, calm_brand=0.4 cps.')

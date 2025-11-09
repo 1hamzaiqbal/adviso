@@ -20,3 +20,6 @@ easyocr>=1.7.1  # visual OCR (requires torch)
 pyspellchecker>=0.8.1  # visual spelling
 # Optional grammar checker (starts a local LanguageTool instance or uses remote API if configured)
 language_tool_python>=2.8.1
+openai-whisper>=20231117
+google-cloud-aiplatform>=1.50.0
+google-cloud-storage>=2.14.0
