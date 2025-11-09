@@ -57,6 +57,29 @@ Backend API requirements:
 
 If you use the prepared Cloud Run deployment, point `ADVALUATE_BACKEND_URL` to your service URL (e.g., `https://advaluate-api-xxxxx-uc.a.run.app`).
 
+### Visual + Audio Word/Grammar Checkers
+
+The UI includes two complementary checkers:
+
+- Visual OCR + Grammar (on-screen text)
+  - Uses EasyOCR to extract visible text at ~1 fps; timestamps reflect frame times.
+  - Runs spelling via `pyspellchecker` and optional grammar via `language_tool_python`.
+  - If dependencies are missing, the app will show a notice and skip this step.
+
+- Audio Transcript + Grammar (cloud)
+  - Uses the Cloud backend (Vertex) to produce a transcript with approximate timestamps and grammar issues.
+  - Displayed when Cloud Brand Analysis is enabled.
+
+Install extras (if you didn’t install via requirements yet):
+
+```bash
+pip install easyocr pyspellchecker language_tool_python
+```
+
+Notes:
+- EasyOCR uses PyTorch under the hood; Apple Silicon is supported via arm64 wheels.
+- `language_tool_python` may launch a local Java server if available; otherwise it may fall back. If grammar is not critical for your workflow, you can skip installing it.
+
 ## Theory (short)
 We approximate attention using:
 - **Saliency (SpectralResidual)** → where eyes are likely drawn in each frame.
