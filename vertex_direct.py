@@ -290,9 +290,9 @@ def analyze_brand_vertex(
         )
 
         # Execute calls
-        summary_obj, summary_raw, summary_err = call_json(p_summary, retries=1)
-        transcript_obj, transcript_raw, transcript_err = call_json(p_transcript, retries=1)
-        visual_obj, visual_raw, visual_err = call_json(p_visual, retries=1)
+        summary_obj, summary_raw, summary_err = call_json(p_summary, retries=2)
+        transcript_obj, transcript_raw, transcript_err = call_json(p_transcript, retries=2)
+        visual_obj, visual_raw, visual_err = call_json(p_visual, retries=2)
 
         # Merge results
         result: Dict[str, Any] = {}

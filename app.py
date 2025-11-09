@@ -226,22 +226,22 @@ def _evaluate_transcript_heuristics(
     }
 
 
-def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optional[str]) -> None:
-    if cloud_err:
-        st.error(f'Cloud analysis failed: {cloud_err}')
+def _render_brand_tab(brand_result: Optional[Dict[str, Any]], brand_err: Optional[str]) -> None:
+    if brand_err:
+        st.error(f'Brand analysis failed: {brand_err}')
         return
-    if not cloud_result:
-        st.info('Cloud analysis was skipped.')
+    if not brand_result:
+        st.info('Brand analysis was skipped.')
         return
 
     st.subheader('Brand Summary')
-    if cloud_result.get('description'):
-        st.write(cloud_result['description'])
+    if brand_result.get('description'):
+        st.write(brand_result['description'])
 
     cols = st.columns(3)
-    logo = (cloud_result.get('logoAnalysis') or {}) if isinstance(cloud_result, dict) else {}
-    tc = (cloud_result.get('textCoherency') or {}) if isinstance(cloud_result, dict) else {}
-    text_extraction = (cloud_result.get('textExtraction') or {}) if isinstance(cloud_result, dict) else {}
+    logo = (brand_result.get('logoAnalysis') or {}) if isinstance(brand_result, dict) else {}
+    tc = (brand_result.get('textCoherency') or {}) if isinstance(brand_result, dict) else {}
+    text_extraction = (brand_result.get('textExtraction') or {}) if isinstance(brand_result, dict) else {}
 
     with cols[0]:
         st.metric('Logo consistent', str(logo.get('isConsistent', 'unknown')))
@@ -280,7 +280,7 @@ def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optiona
         for line in extra_bits:
             st.caption(line)
 
-    transcript = _coerce_segments(cloud_result.get('transcript'))
+    transcript = _coerce_segments(brand_result.get('transcript'))
     if transcript:
         st.markdown('#### Transcript Highlights')
         for seg in transcript[:5]:
@@ -288,7 +288,7 @@ def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optiona
             text = seg.get('text', '')
             st.write(f"{prefix} {text}".strip())
 
-    visual_text = _coerce_segments(cloud_result.get('visualText'))
+    visual_text = _coerce_segments(brand_result.get('visualText'))
     if visual_text:
         st.markdown('#### On-screen Text')
         for seg in visual_text[:5]:
@@ -298,7 +298,7 @@ def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optiona
 
     heuristics = _evaluate_transcript_heuristics(transcript, text_extraction)
     st.markdown('#### Brand & Safety Heuristics')
-    heur_cols = st.columns(4)
+    heur_cols = st.columns(3)
     with heur_cols[0]:
         st.metric(
             'CTA coverage',
@@ -306,22 +306,13 @@ def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optiona
             ', '.join(heuristics['cta_hits']) if heuristics['cta_hits'] else None,
         )
     with heur_cols[1]:
-        mention_count = heuristics.get('brand_mention_count')
-        st.metric(
-            'Brand mentions',
-            str(mention_count if mention_count is not None else 'n/a'),
-        )
-        brand_mentions = heuristics.get('brand_mentions') or []
-        if brand_mentions:
-            st.caption(', '.join(brand_mentions[:4]))
-    with heur_cols[2]:
         nonsense_words = heuristics.get('nonsense_words') or []
         if nonsense_words:
             st.metric('Nonsense words', str(len(nonsense_words)))
             st.caption(', '.join(nonsense_words))
         else:
             st.metric('Nonsense words', 'None detected')
-    with heur_cols[3]:
+    with heur_cols[2]:
         st.metric(
             'Safety flags',
             'Yes' if heuristics['sensitive_hits'] else 'None noted',
@@ -335,19 +326,19 @@ def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optiona
     else:
         st.caption('No obvious sensitive language detected in transcript sample.')
 
-    partial_errors = cloud_result.get('PartialErrors') if isinstance(cloud_result, dict) else None
+    partial_errors = brand_result.get('PartialErrors') if isinstance(brand_result, dict) else None
     if partial_errors:
         st.warning(f"Partial errors during Vertex calls: {partial_errors}")
 
-    meta = cloud_result.get('AnalysisMeta') if isinstance(cloud_result, dict) else None
+    meta = brand_result.get('AnalysisMeta') if isinstance(brand_result, dict) else None
     if meta:
         size_mb = float(meta.get('compressedBytes', 0.0)) / 1_048_576.0
         st.caption(
             f"Vertex payload: {size_mb:.2f} MB, inline={meta.get('usedInline')}, maxSeconds={meta.get('maxSeconds')}"
         )
 
-    with st.expander('Cloud JSON result'):
-        st.json(cloud_result)
+    with st.expander('Brand JSON result'):
+        st.json(brand_result)
 
 
 with st.form('analysis_form'):
@@ -369,7 +360,7 @@ with st.form('analysis_form'):
             index=0,
         )
 
-    st.subheader('Cloud Brand Analysis')
+    st.subheader('Brand Analysis')
     vertex_project = os.getenv('GOOGLE_CLOUD_PROJECT', 'advertigo')
     vertex_location = os.getenv('GOOGLE_CLOUD_LOCATION', 'us-central1')
     st.caption('Optional: add context so Vertex AI can fine-tune brand and safety checks.')
@@ -406,12 +397,12 @@ if submitted:
             report_path = os.path.join(out_dir, 'report.json')
             report = json.load(open(report_path, 'r', encoding='utf-8'))
 
-            cloud_result: Optional[Dict[str, Any]] = None
-            cloud_err: Optional[str] = None
+            brand_result: Optional[Dict[str, Any]] = None
+            brand_err: Optional[str] = None
             if vertex_project:
                 with st.spinner('Calling Vertex AI...'):
                     try:
-                        cloud_result = analyze_brand_vertex(
+                        brand_result = analyze_brand_vertex(
                             video_bytes=video_bytes,
                             filename=uploaded.name or 'video.mp4',
                             content_type=uploaded.type or 'video/mp4',
@@ -423,16 +414,16 @@ if submitted:
                             brand_context=brand_context.strip() or None,
                         )
                     except Exception as exc:  # pragma: no cover - surfaced to user
-                        cloud_err = str(exc)
+                        brand_err = str(exc)
 
-            summary_tab, visuals_tab, cloud_tab = st.tabs(
-                ['Score Summary', 'Visual Outputs', 'Cloud Brand']
+            summary_tab, visuals_tab, brand_tab = st.tabs(
+                ['Score Summary', 'Visual Outputs', 'Brand']
             )
             with summary_tab:
                 _render_summary_tab(report)
             with visuals_tab:
                 _render_visuals_tab(out_dir, report)
-            with cloud_tab:
-                _render_cloud_tab(cloud_result, cloud_err)
+            with brand_tab:
+                _render_brand_tab(brand_result, brand_err)
 else:
     st.info('Upload an MP4 and click "Run analysis" to get started.')
