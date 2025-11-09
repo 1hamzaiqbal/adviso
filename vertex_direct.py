@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import re
 import time
 import uuid
 import tempfile
@@ -121,7 +122,35 @@ def analyze_brand_vertex(
         # Helper to call model with strict, scoped prompts and return (obj, raw_text, err)
         import json as pyjson
 
-        def call_json(prompt_text: str, retries: int = 1) -> Tuple[Optional[Dict[str, Any]], str, Optional[str]]:
+        def _attempt_json_repair(raw_text: str) -> Optional[Dict[str, Any]]:
+            if not raw_text:
+                return None
+            start = raw_text.find("{")
+            end = raw_text.rfind("}")
+            if start < 0 or end <= start:
+                return None
+            candidate = raw_text[start : end + 1]
+            candidate = candidate.replace("\r\n", "\n").strip()
+            candidate = re.sub(r'"PartialErrors"\s*:\s*\[[\s\S]*$', "", candidate).rstrip()
+            if candidate.endswith(","):
+                candidate = candidate[:-1].rstrip()
+            candidate = re.sub(r"\n\s*(\d+)\s*:", "\n", candidate)
+            candidate = re.sub(r"}\s*\n\s*{", "},\n{", candidate)
+            candidate = re.sub(r"]\s*\n\s*{", "],\n{", candidate)
+            candidate = re.sub(r"}\s*\n\s*(\")", r"},\n\1", candidate)
+            candidate = re.sub(r"]\s*\n\s*(\")", r"],\n\1", candidate)
+            curly_delta = candidate.count("{") - candidate.count("}")
+            if curly_delta > 0:
+                candidate = candidate + ("}" * curly_delta)
+            bracket_delta = candidate.count("[") - candidate.count("]")
+            if bracket_delta > 0:
+                candidate = candidate + ("]" * bracket_delta)
+            try:
+                return pyjson.loads(candidate)
+            except Exception:
+                return None
+
+        def call_json(prompt_text: str, retries: int = 2) -> Tuple[Optional[Dict[str, Any]], str, Optional[str]]:
             current_prompt = prompt_text
             raw_text_cache = ""
             last_err: Optional[str] = None
@@ -134,8 +163,8 @@ def analyze_brand_vertex(
                     resp_local = model.generate_content(
                         parts,
                         generation_config={
-                            "temperature": 0.15,
-                            "max_output_tokens": 1536,
+                            "temperature": 0.05,
+                            "max_output_tokens": 2048,
                             "response_mime_type": "application/json",
                         },
                     )
@@ -168,20 +197,30 @@ def analyze_brand_vertex(
                     last_err = str(ce)
 
                 if attempt < retries:
-                    current_prompt = (
-                        "STRICT JSON REMINDER: Escape internal double quotes as \\\" and replace newlines with \\n. "
-                        "Keep strings concise. " + prompt_text
-                    )
+                    reminder_parts = [
+                        "STRICT JSON REMINDER: Respond with RFC8259-compliant JSON only.",
+                        "Use array syntax like [item1, item2]; never prefix entries with indices such as 0: or 1:.",
+                        "Always include commas between objects, escape double quotes as \\\" and newlines as \\n.",
+                        "Do not emit extra commentary or keys (for example PartialErrors).",
+                    ]
+                    if last_err:
+                        reminder_parts.append(f"Previous error: {last_err}")
+                    current_prompt = "\n".join(reminder_parts) + "\n" + prompt_text
                     continue
                 break
 
+            repaired = _attempt_json_repair(raw_text_cache)
+            if repaired is not None:
+                return repaired, raw_text_cache, None
             return None, raw_text_cache, last_err
 
         # Build three scoped prompts to keep responses small and stable
         base_rules = (
-            "Rules: Respond with JSON ONLY. Use exactly these key names. Always include all keys; if nothing found, use empty arrays. "
+            "Rules: Respond with JSON ONLY (strict RFC8259). Use exactly these key names. Always include all keys; if nothing found, use empty arrays []. "
+            "Format arrays with comma-separated elements; never prefix entries with numeric keys like 0:. "
             "Keep arrays small: transcript<=24, visualText<=24, audioGrammar.issues<=8, visualGrammar.issues<=8, visualSpelling.misspellings<=8. "
-            "Deduplicate repeated phrases, limit each text value to <=160 chars, and escape embedded double quotes as \\\". Replace newlines with \\n."
+            "Deduplicate repeated phrases, limit each text value to <=160 chars, escape double quotes as \\\" and replace newlines with \\n. "
+            "Do not add commentary, PartialErrors, or extra fields."
         )
         context_lines = []
         if brand_name:
