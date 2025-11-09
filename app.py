@@ -186,6 +186,7 @@ def _evaluate_transcript_heuristics(
 
     brand_mentions: List[str] = []
     mention_count: Optional[int] = None
+    nonsense_words: List[str] = []
     if isinstance(text_extraction, dict):
         if isinstance(text_extraction.get('brandMentions'), list):
             brand_mentions = [str(item) for item in text_extraction.get('brandMentions', [])][:5]
@@ -194,12 +195,16 @@ def _evaluate_transcript_heuristics(
             raw_count = text_extraction.get('brandMentionCount')
             if isinstance(raw_count, (int, float)):
                 mention_count = int(raw_count)
+        raw_nonsense = text_extraction.get('nonsenseWords')
+        if isinstance(raw_nonsense, list):
+            nonsense_words = [str(item) for item in raw_nonsense if item][:5]
 
     return {
         'sensitive_hits': sensitive_hits,
         'cta_hits': cta_hits,
         'brand_mentions': brand_mentions,
         'brand_mention_count': mention_count,
+        'nonsense_words': nonsense_words,
     }
 
 
@@ -268,22 +273,25 @@ def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optiona
     heuristics = _evaluate_transcript_heuristics(transcript, text_extraction)
     st.markdown('#### Brand & Safety Heuristics')
     heur_cols = st.columns(3)
-    heur_cols[0].metric(
-        'CTA coverage',
-        'Present' if heuristics['cta_hits'] else 'Needs CTA',
-        ', '.join(heuristics['cta_hits']) if heuristics['cta_hits'] else None,
-    )
-    mention_count = heuristics['brand_mention_count']
-    heur_cols[1].metric(
-        'Brand mentions',
-        str(mention_count if mention_count is not None else 'n/a'),
-        ', '.join(heuristics['brand_mentions']) if heuristics['brand_mentions'] else None,
-    )
-    heur_cols[2].metric(
-        'Safety flags',
-        'Yes' if heuristics['sensitive_hits'] else 'None noted',
-        ', '.join(heuristics['sensitive_hits']) if heuristics['sensitive_hits'] else None,
-    )
+    with heur_cols[0]:
+        st.metric(
+            'CTA coverage',
+            'Present' if heuristics['cta_hits'] else 'Needs CTA',
+            ', '.join(heuristics['cta_hits']) if heuristics['cta_hits'] else None,
+        )
+    with heur_cols[1]:
+        nonsense_words = heuristics.get('nonsense_words') or []
+        if nonsense_words:
+            st.metric('Nonsense words', str(len(nonsense_words)))
+            st.caption(', '.join(nonsense_words))
+        else:
+            st.metric('Nonsense words', 'None detected')
+    with heur_cols[2]:
+        st.metric(
+            'Safety flags',
+            'Yes' if heuristics['sensitive_hits'] else 'None noted',
+            ', '.join(heuristics['sensitive_hits']) if heuristics['sensitive_hits'] else None,
+        )
     if heuristics['sensitive_hits']:
         st.warning(
             'Review transcript for potential safety concerns involving: '
