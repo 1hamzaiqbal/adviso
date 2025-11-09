@@ -27,7 +27,7 @@ fi
 source .venv/bin/activate
 
 echo "Installing requirements..."
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 
 # Avoid headless font warnings
 export MPLBACKEND=Agg
@@ -35,5 +35,4 @@ export MPLCONFIGDIR=${MPLCONFIGDIR:-"$ROOT_DIR/.mplconfig"}
 mkdir -p "$MPLCONFIGDIR"
 
 echo "Starting Streamlit..."
-exec streamlit run app.py
-
+exec python -m streamlit run app.py
