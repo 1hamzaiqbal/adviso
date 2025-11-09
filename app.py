@@ -177,6 +177,23 @@ CTA_TERMS = {
 }
 
 
+def _dedupe_strings(values: Any) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    seen = set()
+    unique: List[str] = []
+    for item in values:
+        text = str(item).strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(text)
+    return unique
+
+
 def _evaluate_transcript_heuristics(
     transcript: List[Dict[str, Any]], text_extraction: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -189,8 +206,9 @@ def _evaluate_transcript_heuristics(
     nonsense_words: List[str] = []
     if isinstance(text_extraction, dict):
         if isinstance(text_extraction.get('brandMentions'), list):
-            brand_mentions = [str(item) for item in text_extraction.get('brandMentions', [])][:5]
-            mention_count = len(text_extraction.get('brandMentions'))
+            brand_mentions = _dedupe_strings(text_extraction.get('brandMentions'))
+            mention_count = len(brand_mentions)
+            brand_mentions = brand_mentions[:5]
         else:
             raw_count = text_extraction.get('brandMentionCount')
             if isinstance(raw_count, (int, float)):
@@ -237,20 +255,28 @@ def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optiona
             st.caption(tc['analysis'])
     with cols[2]:
         brand_count = text_extraction.get('brandMentionCount')
+        mentions_caption = None
         if brand_count is None:
             raw_mentions = text_extraction.get('brandMentions')
             if isinstance(raw_mentions, list):
-                brand_count = len(raw_mentions)
+                deduped = _dedupe_strings(raw_mentions)
+                brand_count = len(deduped)
+                if deduped:
+                    mentions_caption = ', '.join(deduped[:4])
             elif isinstance(raw_mentions, (int, float)):
                 brand_count = int(raw_mentions)
         st.metric('Brand mentions', str(brand_count if brand_count is not None else 'n/a'))
-        extra_bits = []
+        extra_bits: List[str] = []
+        if mentions_caption:
+            extra_bits.append('Mentions: ' + mentions_caption)
         nonsense = text_extraction.get('nonsenseWords') or []
         if isinstance(nonsense, list) and nonsense:
             extra_bits.append('Nonsense: ' + ', '.join(nonsense[:4]))
         topics = text_extraction.get('notableTopics') or []
         if isinstance(topics, list) and topics:
-            extra_bits.append('Topics: ' + ', '.join(topics[:4]))
+            deduped_topics = _dedupe_strings(topics)
+            if deduped_topics:
+                extra_bits.append('Topics: ' + ', '.join(deduped_topics[:4]))
         for line in extra_bits:
             st.caption(line)
 
@@ -272,7 +298,7 @@ def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optiona
 
     heuristics = _evaluate_transcript_heuristics(transcript, text_extraction)
     st.markdown('#### Brand & Safety Heuristics')
-    heur_cols = st.columns(3)
+    heur_cols = st.columns(4)
     with heur_cols[0]:
         st.metric(
             'CTA coverage',
@@ -280,13 +306,22 @@ def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optiona
             ', '.join(heuristics['cta_hits']) if heuristics['cta_hits'] else None,
         )
     with heur_cols[1]:
+        mention_count = heuristics.get('brand_mention_count')
+        st.metric(
+            'Brand mentions',
+            str(mention_count if mention_count is not None else 'n/a'),
+        )
+        brand_mentions = heuristics.get('brand_mentions') or []
+        if brand_mentions:
+            st.caption(', '.join(brand_mentions[:4]))
+    with heur_cols[2]:
         nonsense_words = heuristics.get('nonsense_words') or []
         if nonsense_words:
             st.metric('Nonsense words', str(len(nonsense_words)))
             st.caption(', '.join(nonsense_words))
         else:
             st.metric('Nonsense words', 'None detected')
-    with heur_cols[2]:
+    with heur_cols[3]:
         st.metric(
             'Safety flags',
             'Yes' if heuristics['sensitive_hits'] else 'None noted',
@@ -317,25 +352,27 @@ def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optiona
 
 with st.form('analysis_form'):
     st.subheader('Video & Scoring Settings')
-    uploaded = st.file_uploader('Upload MP4', type=['mp4'], help='Limit ~200MB')
-    col_opts = st.columns(3)
+    uploaded = st.file_uploader(
+        'Upload MP4',
+        type=['mp4'],
+        help='Limit ~200MB • MP4, MPEG4',
+    )
+
+    col_opts = st.columns(2)
     with col_opts[0]:
         fps = st.slider('Sampling FPS', 1, 6, 2)
-    with col_opts[1]:
         goal = st.selectbox('Creative goal', ['hook', 'explainer', 'calm_brand'], index=0)
-        scene_method = st.selectbox('Scene change method', ['hist', 'clip'], index=0)
-    with col_opts[2]:
+    with col_opts[1]:
         age_group = st.selectbox(
             'Target age group',
             ['general', 'gen_z', 'millennial', 'gen_x', 'boomer', 'children'],
             index=0,
         )
-        lam_override = st.text_input('Lambda override', '')
 
     st.subheader('Cloud Brand Analysis')
     vertex_project = os.getenv('GOOGLE_CLOUD_PROJECT', 'advertigo')
     vertex_location = os.getenv('GOOGLE_CLOUD_LOCATION', 'us-central1')
-    max_secs = st.slider('Max seconds to send', 10, 120, 60)
+    st.caption('Optional: add context so Vertex AI can fine-tune brand and safety checks.')
     brand_name = st.text_input('Brand / Product name', '')
     brand_context = st.text_area('Brand context / mission', height=80)
 
@@ -362,8 +399,8 @@ if submitted:
                     fps=fps,
                     goal=goal,
                     age_group=age_group,
-                    scene_method=scene_method,
-                    lam_override=lam_override,
+                    scene_method='hist',
+                    lam_override=None,
                 )
 
             report_path = os.path.join(out_dir, 'report.json')
@@ -381,7 +418,7 @@ if submitted:
                             project=vertex_project,
                             location=vertex_location,
                             gcs_bucket=None,
-                            max_seconds=float(max_secs),
+                            max_seconds=60.0,
                             brand_name=brand_name.strip() or None,
                             brand_context=brand_context.strip() or None,
                         )
