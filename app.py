@@ -1,4 +1,5 @@
 import os
+import re
 os.environ.setdefault('MPLBACKEND', 'Agg')  # keep matplotlib headless-friendly
 import json
 import tempfile
@@ -106,11 +107,6 @@ def _render_summary_tab(report: Dict[str, Any]) -> None:
     for item in details.get('recommendations', []) or ['Keep iterating with creative tests.']:
         col_weaknesses.markdown(f"- {item}")
 
-    key_moments = report.get('KeyMoments') or []
-    if key_moments:
-        st.markdown('#### Key Moments')
-        st.dataframe(key_moments, hide_index=True, use_container_width=True)
-
     json_payload = json.dumps(report, ensure_ascii=False, indent=2)
     st.download_button(
         'Download report.json',
@@ -122,41 +118,8 @@ def _render_summary_tab(report: Dict[str, Any]) -> None:
     with st.expander('Scorecard JSON'):
         st.json(report)
 
-    brand_eval = report.get('BrandEvaluation') or {}
-    if brand_eval:
-        st.markdown('### Brand & Safety Heuristics')
-        brand_cols = st.columns(3)
-        overall_brand = brand_eval.get('overallScore')
-        if isinstance(overall_brand, (int, float)):
-            brand_cols[0].metric('Brand critique score', f"{overall_brand * 100:.1f}%")
-        components = brand_eval.get('components', {})
-        palette = components.get('colorPalette') or {}
-        if palette.get('available'):
-            brand_cols[1].metric('Palette match', f"{float(palette.get('score', 0.0)) * 100:.1f}%")
-        logo_comp = components.get('logoDetection') or {}
-        if logo_comp.get('available'):
-            detected = logo_comp.get('detected')
-            status = 'Detected' if detected else 'Not found'
-            score = logo_comp.get('score')
-            brand_cols[2].metric('Logo check', status, f"score={score:.2f}" if isinstance(score, (int, float)) else None)
-        text_comp = components.get('messageClarity') or {}
-        safety_comp = components.get('safetyHeuristics') or {}
-        extra_cols = st.columns(2)
-        if text_comp.get('available'):
-            text_score = text_comp.get('score')
-            extra_cols[0].metric('Message clarity', f"{float(text_score) * 100:.1f}%" if isinstance(text_score, (int, float)) else 'n/a')
-        if safety_comp.get('available'):
-            safety_score = safety_comp.get('score')
-            extra_cols[1].metric('Safety heuristics', f"{float(safety_score) * 100:.1f}%" if isinstance(safety_score, (int, float)) else 'n/a')
 
-        flags = brand_eval.get('flags') or []
-        if flags:
-            st.warning('\n'.join(f"• {flag}" for flag in flags))
-        with st.expander('Brand evaluation details'):
-            st.json(brand_eval)
-
-
-def _render_visuals_tab(out_dir: str) -> None:
+def _render_visuals_tab(out_dir: str, report: Dict[str, Any]) -> None:
     overlay_path = os.path.join(out_dir, 'overlay.mp4')
     if os.path.exists(overlay_path):
         st.subheader('Heatmap Overlay')
@@ -182,6 +145,11 @@ def _render_visuals_tab(out_dir: str) -> None:
             else:
                 container.caption(f'{title}: not available')
 
+    key_moments = report.get('KeyMoments') or []
+    if key_moments:
+        st.markdown('#### Key Moments')
+        st.dataframe(key_moments, hide_index=True, use_container_width=True)
+
 
 def _coerce_segments(value: Any) -> List[Dict[str, Any]]:
     if isinstance(value, list):
@@ -189,6 +157,69 @@ def _coerce_segments(value: Any) -> List[Dict[str, Any]]:
     if isinstance(value, dict) and isinstance(value.get('segments'), list):
         return [seg for seg in value['segments'] if isinstance(seg, dict)]
     return []
+
+
+def _format_segment_range(segment: Dict[str, Any]) -> str:
+    start = segment.get('startSec')
+    end = segment.get('endSec')
+    has_start = isinstance(start, (int, float))
+    has_end = isinstance(end, (int, float))
+    if has_start and has_end:
+        return f"[{start:.1f}s → {end:.1f}s]"
+    if has_start:
+        return f"[{start:.1f}s]"
+    if has_end:
+        return f"[→ {end:.1f}s]"
+    return ''
+
+
+SENSITIVE_TERMS = {
+    'blood',
+    'violence',
+    'weapon',
+    'injury',
+    'explicit',
+    'hate',
+    'gambling',
+    'alcohol',
+    'drugs',
+}
+
+CTA_TERMS = {
+    'sign up',
+    'download',
+    'buy now',
+    'learn more',
+    'start free',
+    'subscribe',
+    'get started',
+}
+
+
+def _evaluate_transcript_heuristics(
+    transcript: List[Dict[str, Any]], text_extraction: Dict[str, Any]
+) -> Dict[str, Any]:
+    combined_text = ' '.join(str(seg.get('text', '')) for seg in transcript).lower()
+    sensitive_hits = sorted({term for term in SENSITIVE_TERMS if re.search(rf"\\b{re.escape(term)}\\b", combined_text)})
+    cta_hits = sorted({term for term in CTA_TERMS if term in combined_text})
+
+    brand_mentions: List[str] = []
+    mention_count: Optional[int] = None
+    if isinstance(text_extraction, dict):
+        if isinstance(text_extraction.get('brandMentions'), list):
+            brand_mentions = [str(item) for item in text_extraction.get('brandMentions', [])][:5]
+            mention_count = len(text_extraction.get('brandMentions'))
+        else:
+            raw_count = text_extraction.get('brandMentionCount')
+            if isinstance(raw_count, (int, float)):
+                mention_count = int(raw_count)
+
+    return {
+        'sensitive_hits': sensitive_hits,
+        'cta_hits': cta_hits,
+        'brand_mentions': brand_mentions,
+        'brand_mention_count': mention_count,
+    }
 
 
 def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optional[str]) -> None:
@@ -241,22 +272,44 @@ def _render_cloud_tab(cloud_result: Optional[Dict[str, Any]], cloud_err: Optiona
     if transcript:
         st.markdown('#### Transcript Highlights')
         for seg in transcript[:5]:
-            start = seg.get('startSec')
-            end = seg.get('endSec')
+            prefix = _format_segment_range(seg)
             text = seg.get('text', '')
-            if isinstance(start, (int, float)) and isinstance(end, (int, float)):
-                st.write(f"[{start:.1f}s → {end:.1f}s] {text}")
-            else:
-                st.write(text)
+            st.write(f"{prefix} {text}".strip())
 
     visual_text = _coerce_segments(cloud_result.get('visualText'))
     if visual_text:
         st.markdown('#### On-screen Text')
         for seg in visual_text[:5]:
+            prefix = _format_segment_range(seg)
             txt = seg.get('text', '')
-            start = seg.get('startSec')
-            prefix = f"t≈{start:.1f}s: " if isinstance(start, (int, float)) else ''
-            st.write(f"{prefix}{txt}")
+            st.write(f"{prefix} {txt}".strip())
+
+    heuristics = _evaluate_transcript_heuristics(transcript, text_extraction)
+    st.markdown('#### Brand & Safety Heuristics')
+    heur_cols = st.columns(3)
+    heur_cols[0].metric(
+        'CTA coverage',
+        'Present' if heuristics['cta_hits'] else 'Needs CTA',
+        ', '.join(heuristics['cta_hits']) if heuristics['cta_hits'] else None,
+    )
+    mention_count = heuristics['brand_mention_count']
+    heur_cols[1].metric(
+        'Brand mentions',
+        str(mention_count if mention_count is not None else 'n/a'),
+        ', '.join(heuristics['brand_mentions']) if heuristics['brand_mentions'] else None,
+    )
+    heur_cols[2].metric(
+        'Safety flags',
+        'Yes' if heuristics['sensitive_hits'] else 'None noted',
+        ', '.join(heuristics['sensitive_hits']) if heuristics['sensitive_hits'] else None,
+    )
+    if heuristics['sensitive_hits']:
+        st.warning(
+            'Review transcript for potential safety concerns involving: '
+            + ', '.join(heuristics['sensitive_hits'])
+        )
+    else:
+        st.caption('No obvious sensitive language detected in transcript sample.')
 
     partial_errors = cloud_result.get('PartialErrors') if isinstance(cloud_result, dict) else None
     if partial_errors:
@@ -291,18 +344,6 @@ with st.form('analysis_form'):
         )
         lam_override = st.text_input('Lambda override (optional)', '')
 
-    st.subheader('Brand & Safety Heuristics (local)')
-    brand_logo_upload = st.file_uploader('Brand logo (optional)', type=['png', 'jpg', 'jpeg', 'webp'])
-    heuristic_cols = st.columns(3)
-    with heuristic_cols[0]:
-        brand_colors_input = st.text_input('Brand palette (hex, comma separated)', '')
-        logo_threshold = st.slider('Logo threshold', 0.3, 0.9, 0.6, 0.05)
-    with heuristic_cols[1]:
-        brand_terms_input = st.text_input('Brand keywords / CTA', '')
-    with heuristic_cols[2]:
-        ocr_toggle = st.checkbox('Run OCR for message clarity', value=False, help='Requires easyocr and torch')
-
-    st.markdown('---')
     st.subheader('Cloud Brand Analysis (Vertex, optional)')
     run_cloud = st.checkbox('Enable Vertex check', value=True)
     cloud_cols = st.columns(3)
@@ -332,12 +373,6 @@ if submitted:
             out_dir = os.path.join(tmpd, 'out')
             os.makedirs(out_dir, exist_ok=True)
 
-            logo_path_for_cli: Optional[str] = None
-            if brand_logo_upload is not None:
-                logo_path_for_cli = os.path.join(tmpd, 'brand_logo.png')
-                with open(logo_path_for_cli, 'wb') as logo_file:
-                    logo_file.write(brand_logo_upload.getvalue())
-
             with st.spinner('Running attention + pacing analysis...'):
                 _run_local_cli(
                     video_path=video_path,
@@ -348,11 +383,11 @@ if submitted:
                     scene_method=scene_method,
                     use_clip=use_clip,
                     lam_override=lam_override,
-                    brand_logo_path=logo_path_for_cli,
-                    brand_colors=brand_colors_input.strip() or None,
-                    brand_terms=brand_terms_input.strip() or None,
-                    ocr_text=ocr_toggle,
-                    logo_threshold=logo_threshold,
+                    brand_logo_path=None,
+                    brand_colors=None,
+                    brand_terms=None,
+                    ocr_text=False,
+                    logo_threshold=0.6,
                 )
 
             report_path = os.path.join(out_dir, 'report.json')
@@ -385,7 +420,7 @@ if submitted:
             with summary_tab:
                 _render_summary_tab(report)
             with visuals_tab:
-                _render_visuals_tab(out_dir)
+                _render_visuals_tab(out_dir, report)
             with cloud_tab:
                 _render_cloud_tab(cloud_result, cloud_err)
 else:
