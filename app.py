@@ -9,6 +9,7 @@ import streamlit as st
 warnings.filterwarnings('ignore', message='pkg_resources is deprecated as an API.*', category=UserWarning)
 
 from cloud_brand_analysis import CloudBrandAnalyzer
+from src.visual_text import extract_visual_text
 
 st.set_page_config(page_title='Ad Attention Analyzer', layout='wide')
 st.title('Ad Attention Analyzer')
@@ -35,6 +36,8 @@ backend_url: str = st.text_input('Backend URL', value=default_backend, help='e.g
 brand_name: str = st.text_input('Brand Name (optional)', '')
 brand_mission: str = st.text_area('Brand Mission (optional)', '')
 run_cloud = st.checkbox('Run Cloud Brand Analysis', value=bool(backend_url))
+run_visual_text = st.checkbox('Run Visual OCR + Grammar (beta)', value=True,
+                              help='Extract on-screen text with OCR, spellcheck and simple grammar; includes timestamps.')
 
 if uploaded is not None and st.button('Analyze'):
     with tempfile.TemporaryDirectory() as tmpd:
@@ -76,6 +79,14 @@ if uploaded is not None and st.button('Analyze'):
                     )
                 except Exception as e:
                     cloud_err = str(e)
+
+        visual_result = None
+        if run_visual_text:
+            with st.spinner('Extracting visual text (OCR) and checking grammar...'):
+                try:
+                    visual_result = extract_visual_text(video_path, fps=1.0, max_frames=90)
+                except Exception as e:
+                    visual_result = {'available': False, 'reason': str(e), 'segments': []}
 
         # Display final score prominently
         if 'ScoreInterpretation' in rep:
@@ -188,6 +199,57 @@ if uploaded is not None and st.button('Analyze'):
             except Exception:
                 # Fallback to raw JSON if schema differs
                 st.json(cloud_result)
+
+        st.markdown('---')
+        st.subheader('Visual OCR + Grammar (On-screen text)')
+        if visual_result is None:
+            st.info('OCR not requested.')
+        elif not visual_result.get('available', False):
+            st.warning(f"OCR/Grammar not available: {visual_result.get('reason','unknown')}")
+        else:
+            segs = visual_result.get('segments', [])
+            if segs:
+                st.markdown('#### Extracted Phrases (with timestamps)')
+                for seg in segs:
+                    st.write(f"t={seg['time']:.1f}s: {seg['text']}")
+                    if seg.get('misspellings'):
+                        st.caption(f"Misspellings: {', '.join(seg['misspellings'])}")
+                    if seg.get('grammar_issues'):
+                        for gi in seg['grammar_issues']:
+                            st.caption(f"Grammar: {gi.get('message','')} → {gi.get('suggestion','')}")
+            else:
+                st.info('No on-screen text detected.')
+            st.markdown('#### Visual Spelling Summary')
+            st.json(visual_result.get('misspellings_summary', {}))
+            if visual_result.get('grammar_issues_summary'):
+                with st.expander('Visual Grammar Issues (detailed)'):
+                    st.json(visual_result['grammar_issues_summary'])
+
+        # Audio transcript + grammar (from cloud)
+        if cloud_result is not None:
+            st.markdown('---')
+            st.subheader('Audio Transcript + Grammar (Cloud)')
+            tr = (cloud_result or {}).get('transcript', {})
+            segs = tr.get('segments', []) if isinstance(tr, dict) else []
+            if segs:
+                st.markdown('#### Transcript Segments')
+                for s in segs:
+                    try:
+                        st.write(f"[{float(s.get('startSec',0)):.1f}s → {float(s.get('endSec',0)):.1f}s] {s.get('text','')}")
+                    except Exception:
+                        st.write(s)
+            ag = (cloud_result or {}).get('audioGrammar', {})
+            issues = ag.get('issues', []) if isinstance(ag, dict) else []
+            if issues:
+                st.markdown('#### Audio Grammar Issues')
+                for m in issues:
+                    hint = m.get('timeHintSec')
+                    prefix = f"t≈{hint:.1f}s: " if isinstance(hint, (int, float)) else ''
+                    sev = m.get('severity','').lower()
+                    sev_prefix = f"({sev}) " if sev else ''
+                    st.write(f"{prefix}{sev_prefix}{m.get('message','')}")
+                    if m.get('suggestion'):
+                        st.caption(f"Suggestion: {m['suggestion']}")
 
 st.markdown('---')
 st.caption('Pacing: P_t = exp(-λ (f_t − f*)²). Goals: hook=2.0 cps, explainer=0.8 cps, calm_brand=0.4 cps.')
