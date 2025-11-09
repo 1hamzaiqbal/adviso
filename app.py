@@ -31,11 +31,6 @@ def _run_local_cli(
     scene_method: str,
     use_clip: bool,
     lam_override: Optional[str],
-    brand_logo_path: Optional[str],
-    brand_colors: Optional[str],
-    brand_terms: Optional[str],
-    ocr_text: bool,
-    logo_threshold: float,
 ) -> None:
     import sys
 
@@ -58,17 +53,6 @@ def _run_local_cli(
         args.append('--use-clip')
     if lam_override and lam_override.strip():
         args.extend(['--lambda', lam_override.strip()])
-    if brand_logo_path:
-        args.extend(['--brand-logo', brand_logo_path])
-    if brand_colors:
-        args.extend(['--brand-colors', brand_colors])
-    if brand_terms:
-        args.extend(['--brand-terms', brand_terms])
-    if ocr_text:
-        args.append('--ocr-text')
-    if logo_threshold is not None:
-        args.extend(['--logo-threshold', f"{logo_threshold:.2f}"])
-
     sys.argv = args
     from src.assess_ad import main as cli_main
 
@@ -344,17 +328,14 @@ with st.form('analysis_form'):
         )
         lam_override = st.text_input('Lambda override (optional)', '')
 
-    st.subheader('Cloud Brand Analysis (Vertex, optional)')
-    run_cloud = st.checkbox('Enable Vertex check', value=True)
-    cloud_cols = st.columns(3)
+    st.subheader('Cloud Brand Analysis')
+    cloud_cols = st.columns(2)
     project_default = os.getenv('GOOGLE_CLOUD_PROJECT', 'advertigo')
     with cloud_cols[0]:
         project_id = st.text_input('GCP Project', value=project_default)
         max_secs = st.slider('Max seconds to send', 10, 120, 60)
     with cloud_cols[1]:
-        vertex_loc = st.text_input('Vertex location', value='us-central1')
         brand_name = st.text_input('Brand / Product name', '')
-    with cloud_cols[2]:
         brand_context = st.text_area('Brand context / mission (optional)', height=80)
 
     submitted = st.form_submit_button('Run analysis', use_container_width=True)
@@ -383,11 +364,6 @@ if submitted:
                     scene_method=scene_method,
                     use_clip=use_clip,
                     lam_override=lam_override,
-                    brand_logo_path=None,
-                    brand_colors=None,
-                    brand_terms=None,
-                    ocr_text=False,
-                    logo_threshold=0.6,
                 )
 
             report_path = os.path.join(out_dir, 'report.json')
@@ -395,17 +371,15 @@ if submitted:
 
             cloud_result: Optional[Dict[str, Any]] = None
             cloud_err: Optional[str] = None
-            if run_cloud:
+            if project_id:
                 with st.spinner('Calling Vertex AI...'):
                     try:
-                        if not project_id:
-                            raise RuntimeError('Provide a GCP project to run the cloud check.')
                         cloud_result = analyze_brand_vertex(
                             video_bytes=video_bytes,
                             filename=uploaded.name or 'video.mp4',
                             content_type=uploaded.type or 'video/mp4',
                             project=project_id,
-                            location=vertex_loc or 'us-central1',
+                            location='us-central1',
                             gcs_bucket=None,
                             max_seconds=float(max_secs),
                             brand_name=brand_name.strip() or None,
