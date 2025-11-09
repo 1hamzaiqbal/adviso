@@ -1,4 +1,5 @@
 import cv2
+import os
 import numpy as np
 from .saliency import heatmap_on_frame
 
@@ -121,8 +122,8 @@ def write_overlay_video(frames_bgr, sal_maps, out_path, fps=24, deltas=None):
     if not frames_bgr or not sal_maps:
         raise ValueError("Empty frames or saliency maps")
     
-    # Debug: print deltas info
-    if deltas is not None:
+    # Optional debug
+    if deltas is not None and os.environ.get('DEBUG_SCENE', '').strip() == '1':
         import sys
         print(f"Scene change visualization: deltas shape={getattr(deltas, 'shape', 'N/A')}, len={len(deltas) if hasattr(deltas, '__len__') else 'N/A'}", file=sys.stderr)
     
@@ -163,14 +164,40 @@ def write_overlay_video(frames_bgr, sal_maps, out_path, fps=24, deltas=None):
         clip = ImageSequenceClip(overlay_frames, fps=fps)
         try:
             clip.write_videofile(out_path, codec='libx264', audio=False, verbose=False, logger=None, preset='medium')
-        except Exception as e:
+        except Exception as e_first:
             # Try with different codec if libx264 fails
             try:
                 clip.write_videofile(out_path, codec='mpeg4', audio=False, verbose=False, logger=None)
-            except Exception:
-                raise RuntimeError(f"Failed to write video with moviepy: {e}")
+            except Exception as e_second:
+                # Fallback to OpenCV if ffmpeg is unavailable
+                try:
+                    clip.close()
+                except Exception:
+                    pass
+                try:
+                    h, w = overlay_frames[0].shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    vw = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+                    if not vw.isOpened():
+                        # Try alternate codecs
+                        for codec in ['avc1', 'XVID', 'MJPG']:
+                            fourcc = cv2.VideoWriter_fourcc(*codec)
+                            vw = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+                            if vw.isOpened():
+                                break
+                    if vw is None or not vw.isOpened():
+                        raise RuntimeError("OpenCV VideoWriter could not be opened as fallback")
+                    for rgb in overlay_frames:
+                        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                        vw.write(bgr)
+                    vw.release()
+                except Exception as e_fallback:
+                    raise RuntimeError(f"Failed to write video (moviepy+opencv fallback). Errors: libx264={e_first}; mpeg4={e_second}; opencv={e_fallback}")
         finally:
-            clip.close()
+            try:
+                clip.close()
+            except Exception:
+                pass
         
     except ImportError:
         # Fallback to OpenCV if moviepy not available

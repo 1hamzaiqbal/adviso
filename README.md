@@ -43,6 +43,32 @@ streamlit run app.py
 
 Upload an MP4 to see heatmaps, curve, and the JSON report.
 
+### Optional: Cloud Brand Coherence (Vertex AI)
+
+This app can call the advaluate_build_1 backend to run a brand coherence analysis using GCS + Vertex AI:
+
+- Set `ADVALUATE_BACKEND_URL` (env var) or paste the URL into the Streamlit field.
+- Toggle "Run Cloud Brand Analysis" and optionally enter Brand Name/Mission.
+- On Analyze, the app uploads your video via a signed URL and requests analysis. Results render in the UI.
+
+Backend reference used here: `advaluate_build_1/backend/server.js` (Node/Express). It expects:
+
+- `UPLOAD_BUCKET` env var set to a GCS bucket
+- Proper Google Cloud credentials/permissions
+- Vertex location (optional): `VERTEX_LOCATION` (default `us-central1`)
+
+To run the backend locally (example):
+
+```bash
+cd ../advaluate_build_1/backend
+npm i
+export UPLOAD_BUCKET=your_bucket_name
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json  # or use gcloud auth
+node server.js  # or: npm start
+```
+
+Then in Streamlit, set Backend URL to `http://localhost:8080` and enable Cloud Brand Analysis.
+
 ## Theory (short)
 We approximate attention using:
 - **Saliency (SpectralResidual)** → where eyes are likely drawn in each frame.

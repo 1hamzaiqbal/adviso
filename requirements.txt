@@ -5,6 +5,7 @@ pillow==10.4.0
 tqdm==4.66.5
 matplotlib==3.9.2
 moviepy==1.0.3
+imageio-ffmpeg>=0.4.9
 
 # Optional (improves results)
 torch>=2.1.0
@@ -13,3 +14,5 @@ clip-anytorch==2.6.0
 
 # App
 streamlit==1.38.0
+requests>=2.32.3
+setuptools<81  # quiet clip pkg_resources warning

@@ -1,10 +1,23 @@
 import torch, numpy as np
 from PIL import Image
 
+# Simple module-level cache so we don't reload CLIP each run
+_CLIP_CACHE = {
+    'model': None,
+    'preprocess': None,
+    'device': 'cpu'
+}
+
 def try_load_clip(device='cpu'):
+    # Return cached if available
+    if _CLIP_CACHE['model'] is not None and _CLIP_CACHE['preprocess'] is not None:
+        return _CLIP_CACHE['model'], _CLIP_CACHE['preprocess'], _CLIP_CACHE['device']
     try:
         import clip
         model, preprocess = clip.load('ViT-B/32', device=device, download=True)
+        _CLIP_CACHE['model'] = model
+        _CLIP_CACHE['preprocess'] = preprocess
+        _CLIP_CACHE['device'] = device
         return model, preprocess, device
     except Exception:
         return None, None, device
