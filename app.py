@@ -253,3 +253,17 @@ if uploaded is not None and st.button('Analyze'):
 
 st.markdown('---')
 st.caption('Pacing: P_t = exp(-λ (f_t − f*)²). Goals: hook=2.0 cps, explainer=0.8 cps, calm_brand=0.4 cps.')
+with st.expander('Environment Status', expanded=False):
+    def _has(mod):
+        try:
+            __import__(mod)
+            return True
+        except Exception:
+            return False
+    st.write({
+        'torch': _has('torch'),
+        'clip-anytorch': _has('clip'),
+        'easyocr': _has('easyocr'),
+        'pyspellchecker': _has('spellchecker'),
+        'language_tool_python': _has('language_tool_python')
+    })

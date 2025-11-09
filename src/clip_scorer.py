@@ -1,4 +1,4 @@
-import torch, numpy as np
+import numpy as np
 from PIL import Image
 
 # Simple module-level cache so we don't reload CLIP each run
@@ -13,6 +13,7 @@ def try_load_clip(device='cpu'):
     if _CLIP_CACHE['model'] is not None and _CLIP_CACHE['preprocess'] is not None:
         return _CLIP_CACHE['model'], _CLIP_CACHE['preprocess'], _CLIP_CACHE['device']
     try:
+        import torch  # lazy import to avoid torch warnings when CLIP disabled
         import clip
         model, preprocess = clip.load('ViT-B/32', device=device, download=True)
         _CLIP_CACHE['model'] = model
@@ -27,6 +28,7 @@ def score_frames_with_prompts(frames_bgr, prompts=('an eye-catching ad','a borin
     if model is None:
         return [0.5]*len(frames_bgr), 0.0
 
+    import torch  # lazy
     import clip
     text = clip.tokenize(list(prompts)).to(device)
     with torch.no_grad():
