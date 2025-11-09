@@ -41,7 +41,7 @@ Outputs in `./out`:
 streamlit run app.py
 ```
 
-Upload an MP4 to see heatmaps, curve, and the JSON report.
+Upload an MP4, configure settings in the single form, and switch between the **Score Summary**, **Visual Outputs**, and **Cloud Brand** tabs to review results.
 
 ### Cloud Brand Coherence (Vertex Direct)
 
@@ -54,30 +54,8 @@ The app now calls Vertex AI directly from Python — no separate backend require
 
 Notes:
 - For long videos, the app trims to your chosen max seconds and downscales to keep the request inline (~15MB limit).
-- Returned JSON includes description, logoAnalysis, textCoherency, textExtraction, transcript, audioGrammar, visualText, visualGrammar, and visualSpelling; the UI renders these.
-
-### Visual + Audio Word/Grammar Checkers
-
-The UI includes two complementary checkers:
-
-- Visual OCR + Grammar (on-screen text)
-  - Uses EasyOCR to extract visible text at ~1 fps; timestamps reflect frame times.
-  - Runs spelling via `pyspellchecker` and optional grammar via `language_tool_python`.
-  - If dependencies are missing, the app will show a notice and skip this step.
-
-- Audio Transcript + Grammar (cloud)
-  - Uses the Cloud backend (Vertex) to produce a transcript with approximate timestamps and grammar issues.
-  - Displayed when Cloud Brand Analysis is enabled.
-
-Install extras (if you didn’t install via requirements yet):
-
-```bash
-pip install easyocr pyspellchecker language_tool_python
-```
-
-Notes:
-- EasyOCR uses PyTorch under the hood; Apple Silicon is supported via arm64 wheels.
-- `language_tool_python` may launch a local Java server if available; otherwise it may fall back. If grammar is not critical for your workflow, you can skip installing it.
+- Returned JSON includes description, logoAnalysis, textCoherency, textExtraction, transcript, audioGrammar, visualText, visualGrammar, and visualSpelling; the UI renders a concise summary and exposes the raw payload in an expander.
+- Provide optional brand name/context in the form to bias the Vertex prompts toward your product or claim.
 
 ## Theory (short)
 We approximate attention using:
@@ -90,4 +68,3 @@ Weights are configurable in `src/attention_score.py`.
 
 ## License
 MIT (for this scaffold). Ensure your input content complies with platform policies.
-# addddddd

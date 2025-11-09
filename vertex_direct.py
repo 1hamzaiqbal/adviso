@@ -96,6 +96,8 @@ def analyze_brand_vertex(
     project: str,
     location: str = "us-central1",
     gcs_bucket: Optional[str] = None,
+    brand_name: Optional[str] = None,
+    brand_context: Optional[str] = None,
     max_seconds: float = 90.0,
 ) -> Dict[str, Any]:
     ok, err = _init_vertex(project, location)
@@ -164,15 +166,28 @@ def analyze_brand_vertex(
             "Keep arrays small: transcript<=30, visualText<=30, audioGrammar.issues<=12, visualGrammar.issues<=12, visualSpelling.misspellings<=12. "
             "Deduplicate repeated phrases. Keep per item text <= 160 chars."
         )
-        p_summary = (
-            "Return JSON with keys: description, logoAnalysis{isConsistent,reasoning,identifiedLogo}, textCoherency{score,analysis}, textExtraction{nonsenseWords,brandMentions}. "
-            + base_rules
+        context_lines = []
+        if brand_name:
+            context_lines.append(f"Brand name: {brand_name}")
+        if brand_context:
+            context_lines.append(f"Brand context: {brand_context}")
+        context_block = ""
+        if context_lines:
+            context_block = "Brand context:\n" + "\n".join(context_lines) + "\n"
+
+        def _prompt(body: str) -> str:
+            return context_block + body if context_block else body
+
+        p_summary = _prompt(
+            "Return JSON with keys: description, logoAnalysis{isConsistent,reasoning,identifiedLogo}, textCoherency{score,analysis}, textExtraction{brandMentionCount,nonsenseWords,notableTopics}. "
+            "Keep description <= 120 words. textExtraction.brandMentionCount must be an integer count of how often the brand is said. "
+            "Limit textExtraction.nonsenseWords<=4 and notableTopics<=4 with short phrases." + base_rules
         )
-        p_transcript = (
+        p_transcript = _prompt(
             "Return JSON with keys: transcript (array of {startSec,endSec,text}), audioGrammar{issues:[{timeHintSec,message,severity,suggestion}]}. "
             "Provide timestamps; approximate if needed. " + base_rules
         )
-        p_visual = (
+        p_visual = _prompt(
             "Return JSON with keys: visualText (array of {startSec?,endSec?,text}), visualGrammar{issues:[{timeHintSec?,message,severity,suggestion?}]}, visualSpelling{misspellings:[{word,timeHintSec?,suggestion?}]}. "
             + base_rules
         )
