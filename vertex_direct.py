@@ -122,29 +122,66 @@ def analyze_brand_vertex(
         # Helper to call model with strict, scoped prompts and return (obj, raw_text, err)
         import json as pyjson
 
+        def _escape_unescaped_inner_quotes(text: str) -> str:
+            """Escape double quotes that appear inside JSON string values."""
+            out: list[str] = []
+            in_string = False
+            escape = False
+            length = len(text)
+            idx = 0
+            while idx < length:
+                ch = text[idx]
+                if in_string:
+                    if escape:
+                        out.append(ch)
+                        escape = False
+                    elif ch == '\\':
+                        out.append(ch)
+                        escape = True
+                    elif ch == '"':
+                        j = idx + 1
+                        while j < length and text[j].isspace():
+                            j += 1
+                        next_char = text[j] if j < length else ''
+                        if next_char and next_char not in {',', '}', ']', ':'}:
+                            out.append('\\')
+                            out.append('"')
+                        else:
+                            out.append(ch)
+                            in_string = False
+                    else:
+                        out.append(ch)
+                else:
+                    out.append(ch)
+                    if ch == '"':
+                        in_string = True
+                idx += 1
+            return "".join(out)
+
         def _attempt_json_repair(raw_text: str) -> Optional[Dict[str, Any]]:
             if not raw_text:
                 return None
-            start = raw_text.find("{")
-            end = raw_text.rfind("}")
+            start = raw_text.find('{')
+            end = raw_text.rfind('}')
             if start < 0 or end <= start:
                 return None
             candidate = raw_text[start : end + 1]
-            candidate = candidate.replace("\r\n", "\n").strip()
-            candidate = re.sub(r'"PartialErrors"\s*:\s*\[[\s\S]*$', "", candidate).rstrip()
-            if candidate.endswith(","):
+            candidate = _escape_unescaped_inner_quotes(candidate)
+            candidate = candidate.replace('\r\n', '\n').strip()
+            candidate = re.sub(r'"PartialErrors"\s*:\s*\[[\s\S]*$', '', candidate).rstrip()
+            if candidate.endswith(','):
                 candidate = candidate[:-1].rstrip()
             candidate = re.sub(r"\n\s*(\d+)\s*:", "\n", candidate)
             candidate = re.sub(r"}\s*\n\s*{", "},\n{", candidate)
-            candidate = re.sub(r"]\s*\n\s*{", "],\n{", candidate)
+            candidate = re.sub(r"\]\\s*\\n\\s*{", "],\n{", candidate)
             candidate = re.sub(r"}\s*\n\s*(\")", r"},\n\1", candidate)
-            candidate = re.sub(r"]\s*\n\s*(\")", r"],\n\1", candidate)
-            curly_delta = candidate.count("{") - candidate.count("}")
+            candidate = re.sub(r"\]\\s*\\n\\s*(\")", r"],\n\1", candidate)
+            curly_delta = candidate.count('{') - candidate.count('}')
             if curly_delta > 0:
-                candidate = candidate + ("}" * curly_delta)
-            bracket_delta = candidate.count("[") - candidate.count("]")
+                candidate = candidate + ('}' * curly_delta)
+            bracket_delta = candidate.count('[') - candidate.count(']')
             if bracket_delta > 0:
-                candidate = candidate + ("]" * bracket_delta)
+                candidate = candidate + (']' * bracket_delta)
             try:
                 return pyjson.loads(candidate)
             except Exception:
@@ -187,9 +224,13 @@ def analyze_brand_vertex(
                         e = text_concat_l.rfind("}")
                         if s >= 0 and e > s:
                             snippet = text_concat_l[s:e + 1]
+                            snippet = _escape_unescaped_inner_quotes(snippet)
                             try:
                                 return pyjson.loads(snippet), text_concat_l, None
                             except Exception as pe:
+                                repaired_local = _attempt_json_repair(snippet)
+                                if repaired_local is not None:
+                                    return repaired_local, text_concat_l, None
                                 last_err = f"parse error: {pe}"
                         else:
                             last_err = "no json braces"
