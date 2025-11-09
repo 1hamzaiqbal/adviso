@@ -26,20 +26,15 @@ age_group = st.selectbox('Target Age Group',
 scene_method = st.selectbox('Scene-change method', ['hist','clip'], index=0)
 lam_override = st.text_input('Lambda override (optional)', '')
 
-# Cloud brand analysis (from advaluate_build_1 backend)
 st.markdown('---')
-st.subheader('Cloud Brand Coherence Analysis (Vertex AI)')
-st.caption('Optional: uses the advaluate_build_1 backend with GCS + Vertex AI. Configure backend URL to enable.')
+st.subheader('Cloud Analysis (Vertex AI)')
+st.caption('If a backend URL is provided, Analyze will automatically run cloud audio transcript + grammar and visual OCR/grammar in one pass.')
 
 default_backend = os.getenv('ADVALUATE_BACKEND_URL', '').strip()
-backend_url: str = st.text_input('Backend URL', value=default_backend, help='e.g., https://your-backend.example.com')
+backend_url: str = st.text_input('Backend URL', value=default_backend, help='e.g., https://advaluate-api-xxxx-uc.a.run.app')
 brand_name: str = st.text_input('Brand Name (optional)', '')
 brand_mission: str = st.text_area('Brand Mission (optional)', '')
-run_cloud = st.checkbox('Run Cloud Brand Analysis', value=bool(backend_url))
-run_visual_text = st.checkbox('Run Visual OCR + Grammar (beta)', value=True,
-                              help='Extract on-screen text; if cloud is configured, we prefer Vertex-based extraction.')
-prefer_cloud_visual = st.checkbox('Prefer Cloud for Visual OCR (Vertex)', value=bool(backend_url),
-                                  help='If enabled and backend URL is set, use cloud extraction for on-screen text.')
+cloud_enabled = bool(backend_url.strip())
 
 if uploaded is not None and st.button('Analyze'):
     with tempfile.TemporaryDirectory() as tmpd:
@@ -68,7 +63,7 @@ if uploaded is not None and st.button('Analyze'):
 
         cloud_result = None
         cloud_err = None
-        if run_cloud and backend_url.strip():
+        if cloud_enabled:
             with st.spinner('Uploading to cloud and analyzing brand coherence...'):
                 try:
                     analyzer = CloudBrandAnalyzer(base_url=backend_url.strip())
@@ -84,14 +79,20 @@ if uploaded is not None and st.button('Analyze'):
 
         visual_result = None
         cloud_visual = None
-        if run_visual_text and prefer_cloud_visual and backend_url.strip():
-            # Defer to cloud via the existing analyze call's visual* fields
+        if cloud_enabled:
+            # Prefer cloud visual outputs; fallback to local OCR only if missing
             cloud_visual = {
                 'visualText': (cloud_result or {}).get('visualText'),
                 'visualGrammar': (cloud_result or {}).get('visualGrammar'),
                 'visualSpelling': (cloud_result or {}).get('visualSpelling'),
             }
-        elif run_visual_text:
+            if not any([(cloud_visual.get('visualText') or {}), (cloud_visual.get('visualGrammar') or {}), (cloud_visual.get('visualSpelling') or {})]):
+                try:
+                    with st.spinner('Cloud visual output unavailable. Falling back to local OCR...'):
+                        visual_result = extract_visual_text(video_path, fps=1.0, max_frames=90)
+                except Exception as e:
+                    visual_result = {'available': False, 'reason': str(e), 'segments': []}
+        else:
             with st.spinner('Extracting visual text locally (OCR) and checking grammar...'):
                 try:
                     visual_result = extract_visual_text(video_path, fps=1.0, max_frames=90)
@@ -212,72 +213,81 @@ if uploaded is not None and st.button('Analyze'):
 
         st.markdown('---')
         st.subheader('Visual OCR + Grammar (On-screen text)')
-        if not run_visual_text:
-            st.info('OCR not requested.')
-        else:
-            if cloud_visual and (cloud_visual.get('visualText') or cloud_visual.get('visualGrammar') or cloud_visual.get('visualSpelling')):
-                vt = cloud_visual.get('visualText') or {}
-                segs = vt.get('segments', []) if isinstance(vt, dict) else []
-                if segs:
-                    st.markdown('#### Extracted Phrases (cloud)')
-                    for s in segs:
-                        try:
-                            start = s.get('startSec'); end = s.get('endSec'); txt = s.get('text','')
-                            if isinstance(start, (int,float)) and isinstance(end, (int,float)):
-                                st.write(f"[{start:.1f}s → {end:.1f}s] {txt}")
-                            elif isinstance(start, (int,float)):
-                                st.write(f"t≈{start:.1f}s: {txt}")
-                            else:
-                                st.write(txt)
-                        except Exception:
-                            st.write(s)
-                vg = cloud_visual.get('visualGrammar') or {}
-                gi = vg.get('issues', []) if isinstance(vg, dict) else []
-                if gi:
-                    st.markdown('#### Visual Grammar Issues (cloud)')
-                    for m in gi:
-                        hint = m.get('timeHintSec')
-                        prefix = f"t≈{hint:.1f}s: " if isinstance(hint, (int, float)) else ''
-                        sev = m.get('severity','').lower()
-                        sev_prefix = f"({sev}) " if sev else ''
-                        st.write(f"{prefix}{sev_prefix}{m.get('message','')}")
-                        if m.get('suggestion'):
-                            st.caption(f"Suggestion: {m['suggestion']}")
-                vs = cloud_visual.get('visualSpelling') or {}
-                miss = vs.get('misspellings', []) if isinstance(vs, dict) else []
-                if miss:
-                    st.markdown('#### Visual Spelling (cloud)')
-                    st.json(miss)
-            else:
-                if visual_result is None:
-                    st.info('No cloud visual output and local OCR disabled or failed.')
-                elif not visual_result.get('available', False):
-                    st.warning(f"OCR/Grammar not available: {visual_result.get('reason','unknown')}")
-                else:
-                    segs = visual_result.get('segments', [])
-                    if segs:
-                        st.markdown('#### Extracted Phrases (local)')
-                        for seg in segs:
-                            st.write(f"t={seg['time']:.1f}s: {seg['text']}")
-                            if seg.get('misspellings'):
-                                st.caption(f"Misspellings: {', '.join(seg['misspellings'])}")
-                            if seg.get('grammar_issues'):
-                                for gi in seg['grammar_issues']:
-                                    st.caption(f"Grammar: {gi.get('message','')} → {gi.get('suggestion','')}")
+        # Prefer cloud outputs
+        vt = (cloud_visual or {}).get('visualText') if cloud_visual else None
+        # Accept both shapes: list or {segments:[...]}
+        cloud_v_segments = []
+        if isinstance(vt, list):
+            cloud_v_segments = vt
+        elif isinstance(vt, dict):
+            cloud_v_segments = vt.get('segments', []) or []
+        if cloud_v_segments:
+            st.markdown('#### Extracted Phrases (cloud)')
+            for s in cloud_v_segments:
+                try:
+                    start = s.get('startSec'); end = s.get('endSec'); txt = s.get('text','')
+                    if isinstance(start, (int,float)) and isinstance(end, (int,float)):
+                        st.write(f"[{start:.1f}s → {end:.1f}s] {txt}")
+                    elif isinstance(start, (int,float)):
+                        st.write(f"t≈{start:.1f}s: {txt}")
                     else:
-                        st.info('No on-screen text detected (local).')
-                    st.markdown('#### Visual Spelling Summary (local)')
-                    st.json(visual_result.get('misspellings_summary', {}))
-                    if visual_result.get('grammar_issues_summary'):
-                        with st.expander('Visual Grammar Issues (detailed, local)'):
-                            st.json(visual_result['grammar_issues_summary'])
+                        st.write(txt)
+                except Exception:
+                    st.write(s)
+            vg = (cloud_visual or {}).get('visualGrammar') or {}
+            gi = vg.get('issues', []) if isinstance(vg, dict) else []
+            if gi:
+                st.markdown('#### Visual Grammar Issues (cloud)')
+                for m in gi:
+                    hint = m.get('timeHintSec')
+                    prefix = f"t≈{hint:.1f}s: " if isinstance(hint, (int, float)) else ''
+                    sev = m.get('severity','').lower()
+                    sev_prefix = f"({sev}) " if sev else ''
+                    st.write(f"{prefix}{sev_prefix}{m.get('message','')}")
+                    if m.get('suggestion'):
+                        st.caption(f"Suggestion: {m['suggestion']}")
+            vs = (cloud_visual or {}).get('visualSpelling') or {}
+            miss = vs.get('misspellings', []) if isinstance(vs, dict) else []
+            if miss:
+                st.markdown('#### Visual Spelling (cloud)')
+                st.json(miss)
+        else:
+            # Local fallback
+            if visual_result is None:
+                st.info('No cloud visual output and local OCR disabled or failed.')
+            elif not visual_result.get('available', False):
+                st.warning(f"OCR/Grammar not available: {visual_result.get('reason','unknown')}")
+            else:
+                segs = visual_result.get('segments', [])
+                if segs:
+                    st.markdown('#### Extracted Phrases (local)')
+                    for seg in segs:
+                        st.write(f"t={seg['time']:.1f}s: {seg['text']}")
+                        if seg.get('misspellings'):
+                            st.caption(f"Misspellings: {', '.join(seg['misspellings'])}")
+                        if seg.get('grammar_issues'):
+                            for gi in seg['grammar_issues']:
+                                st.caption(f"Grammar: {gi.get('message','')} → {gi.get('suggestion','')}")
+                else:
+                    st.info('No on-screen text detected (local).')
+                st.markdown('#### Visual Spelling Summary (local)')
+                st.json(visual_result.get('misspellings_summary', {}))
+                if visual_result.get('grammar_issues_summary'):
+                    with st.expander('Visual Grammar Issues (detailed, local)'):
+                        st.json(visual_result['grammar_issues_summary'])
 
         # Audio transcript + grammar (from cloud)
         if cloud_result is not None:
             st.markdown('---')
             st.subheader('Audio Transcript + Grammar (Cloud)')
             tr = (cloud_result or {}).get('transcript', {})
-            segs = tr.get('segments', []) if isinstance(tr, dict) else []
+            # Accept both shapes: list or {segments:[...]}
+            if isinstance(tr, list):
+                segs = tr
+            elif isinstance(tr, dict):
+                segs = tr.get('segments', [])
+            else:
+                segs = []
             if segs:
                 st.markdown('#### Transcript Segments')
                 for s in segs:

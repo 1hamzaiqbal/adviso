@@ -31,8 +31,16 @@ class CloudBrandAnalyzer:
             "brandMission": brand_mission or None,
         }
         r = requests.post(url, json=payload, timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+        if r.ok:
+            return r.json()
+        # Try to surface helpful server details
+        detail = None
+        try:
+            detail = r.json()
+        except Exception:
+            detail = r.text
+        msg = f"Analyze request failed ({r.status_code}). Details: {detail}"
+        raise RuntimeError(msg)
 
     def run(self,
             video_bytes: bytes,
@@ -50,4 +58,3 @@ class CloudBrandAnalyzer:
         upload_url, gcs_uri = self._sign_upload(filename, content_type)
         self._upload_bytes(upload_url, video_bytes, content_type)
         return self._analyze(gcs_uri, brand_name, brand_mission)
-
