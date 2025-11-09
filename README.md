@@ -9,6 +9,7 @@ Predict and visualize whether an ad **captures attention** in the first 3–5 se
 - **Attention curve** over time + JSON scorecard
 - **Overlay video** with heatmap blended onto your ad
 - **Streamlit app** for interactive uploads and comparisons
+- **Brand & safety heuristics** (logo detection, palette alignment, OCR clarity, flicker checks)
 
 ## Install
 
@@ -27,7 +28,11 @@ python -m src.assess_ad \\
   --video sample.mp4 \\
   --out ./out \\
   --fps 2 \\
-  --use-clip
+  --use-clip \\
+  --brand-logo ./brand_logo.png \\
+  --brand-colors "#111111,#FF6600" \\
+  --brand-terms "BrandName,CTA" \\
+  --ocr-text
 ```
 
 Outputs in `./out`:
@@ -56,6 +61,7 @@ Notes:
 - For long videos, the app trims to your chosen max seconds and downscales to keep the request inline (~15MB limit).
 - Returned JSON includes description, logoAnalysis, textCoherency, textExtraction, transcript, audioGrammar, visualText, visualGrammar, and visualSpelling; the UI renders a concise summary and exposes the raw payload in an expander.
 - Provide optional brand name/context in the form to bias the Vertex prompts toward your product or claim.
+- Brand heuristic inputs (logo, palette, keywords) feed the local critique engine with logo detection, palette alignment, OCR-based message clarity, and luminance safety checks that surface in the Score Summary tab.
 
 ## Theory (short)
 We approximate attention using:
